@@ -307,8 +307,8 @@ refined as earlier WPs surface new information; it is not a fixed contract.
 | WP-02A | Curriculum, reference-architecture, and Principal Engineer learning enhancement (this document, the reference-repository matrix, and the failure matrix). No implementation. | Done |
 | WP-03 | Native Java producer/consumer fundamentals (no Spring). (`lab-02-native-java-producer-consumer`) | Done |
 | WP-04 | Partitioning experiments: good vs. bad keys, hot partitions. (`lab-03-partitioning-ordering`) | Done |
-| WP-05 | Consumer groups and rebalancing, including cooperative rebalancing and static membership. (`lab-04-consumer-groups-rebalancing`) | **This work package.** |
-| WP-06 | Replication and broker failure experiments; ISR and `min.insync.replicas`. | Planned |
+| WP-05 | Consumer groups and rebalancing, including cooperative rebalancing and static membership. (`lab-04-consumer-groups-rebalancing`) | Done |
+| WP-06 | Replication and broker failure experiments; ISR and `min.insync.replicas`. | **This work package.** |
 | WP-07 | KRaft controller quorum and controller failure. | Planned |
 | WP-08 | Idempotent producers and transactions; delivery semantics experiments. | Planned |
 | WP-09 | Schema evolution: Avro/Protobuf + Schema Registry, compatibility modes. | Planned |
