@@ -1,0 +1,140 @@
+// Lab 02 — Native Java Producer & Consumer Fundamentals (WP-03).
+//
+// Dependency graph is deliberately small: the Kafka Java client, a minimal
+// logging backend so client behavior is observable, and the test stack this
+// repository committed to in WP-02A (JUnit 5/Jupiter + Testcontainers,
+// against a real containerized broker — not a mock). No Spring, no Kafka
+// Streams, no schema libraries: those belong to later work packages.
+
+import java.time.Duration
+
+plugins {
+    id 'java'
+}
+
+group = 'com.kafkalab'
+version = '0.1.0'
+
+java {
+    // Java 21 (LTS) is this repository's first Java baseline — see the lab
+    // README ("Java baseline") for why 21 was chosen: it is a current LTS
+    // release, and org.apache.kafka:kafka-clients (this project's pinned
+    // version) fully supports it. This build compiles with whichever JDK
+    // runs Gradle (>= 17, since JUnit Jupiter 6 requires it) but targets 21
+    // bytecode via sourceCompatibility/targetCompatibility, so the output is
+    // portable to any JDK 21+ runtime regardless of which JDK produced it.
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // The only thing this lab is actually about.
+    implementation 'org.apache.kafka:kafka-clients:4.3.1'
+
+    // A logging backend, so the Kafka client's own log output (metadata
+    // refreshes, coordinator/rebalance events, connection state) is visible
+    // instead of silently swallowed by SLF4J's no-op default. See
+    // src/main/resources/simplelogger.properties for the (small, explained)
+    // set of categories this lab enables above the default level.
+    implementation 'org.slf4j:slf4j-api:2.0.19'
+    runtimeOnly 'org.slf4j:slf4j-simple:2.0.19'
+
+    // Testing stack per WP-02A: JUnit 5 (Jupiter) for structure and
+    // assertions, Testcontainers for a real, disposable, KRaft-mode broker
+    // in integration tests — never a mocked KafkaProducer/KafkaConsumer as
+    // the primary test strategy. See REFERENCE_REPOSITORIES.md's testing
+    // progression for the full rationale.
+    testImplementation 'org.junit.jupiter:junit-jupiter:6.1.3'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+
+    testImplementation 'org.testcontainers:testcontainers:2.0.5'
+    testImplementation 'org.testcontainers:testcontainers-junit-jupiter:2.0.5'
+    testImplementation 'org.testcontainers:testcontainers-kafka:2.0.5'
+}
+
+test {
+    useJUnitPlatform()
+    // Every test in this lab talks to a real, Testcontainers-managed broker
+    // over Docker; this timeout is a safety net against a genuinely hung
+    // container pull/start, not a synchronization mechanism (see the
+    // Testcontainers test itself for why no test relies on a fixed sleep).
+    timeout = Duration.ofMinutes(5)
+    testLogging {
+        events = ['passed', 'skipped', 'failed']
+        exceptionFormat = 'full'
+    }
+}
+
+// --- Runnable experiments -------------------------------------------------
+// Each experiment in the lab README maps to exactly one of these tasks, so
+// "which class do I run for experiment N" is never a question. Configurable
+// values are passed as Gradle project properties (-Pname=value) rather than
+// hard-coded, so — for example — the consumer-group experiment (running two
+// instances with different client IDs, or a third in a different group) is
+// just two more terminal invocations with different -P flags, not a second
+// copy of the class.
+
+tasks.register('runProducerBasic', JavaExec) {
+    group = 'lab experiments'
+    description = 'Experiment: send records with a callback, observe (topic, partition, offset).'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.nativeclient.producer.ProducerBasicApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: 'localhost:9092'
+    systemProperty 'topic', findProperty('topic') ?: 'orders-java'
+}
+
+tasks.register('runProducerKeyAffinity', JavaExec) {
+    group = 'lab experiments'
+    description = 'Experiment: repeated same-key records — observe partition affinity.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.nativeclient.producer.ProducerKeyAffinityApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: 'localhost:9092'
+    systemProperty 'topic', findProperty('topic') ?: 'orders-java'
+    systemProperty 'key', findProperty('key') ?: 'order-1001'
+    systemProperty 'count', findProperty('count') ?: '5'
+}
+
+tasks.register('runProducerNullKey', JavaExec) {
+    group = 'lab experiments'
+    description = 'Experiment: null-key records — observe (not assume) partition distribution.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.nativeclient.producer.ProducerNullKeyApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: 'localhost:9092'
+    systemProperty 'topic', findProperty('topic') ?: 'orders-java'
+    systemProperty 'count', findProperty('count') ?: '6'
+}
+
+tasks.register('runProducerExplicitPartition', JavaExec) {
+    group = 'lab experiments'
+    description = 'Experiment: ProducerRecord with an explicit partition — and why that is usually a bad idea.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.nativeclient.producer.ProducerExplicitPartitionApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: 'localhost:9092'
+    systemProperty 'topic', findProperty('topic') ?: 'orders-java'
+    systemProperty 'partition', findProperty('partition') ?: '0'
+}
+
+tasks.register('runProducerBrokerDown', JavaExec) {
+    group = 'lab experiments'
+    description = 'Failure experiment: run this while the broker is stopped to observe send() failure behavior.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.nativeclient.producer.ProducerBrokerDownApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: 'localhost:9092'
+    systemProperty 'topic', findProperty('topic') ?: 'orders-java'
+}
+
+tasks.register('runConsumer', JavaExec) {
+    group = 'lab experiments'
+    description = 'Experiment: poll loop, consumer groups, replay, graceful shutdown (Ctrl+C).'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.nativeclient.consumer.ConsumerApp'
+    standardInput = System.in
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: 'localhost:9092'
+    systemProperty 'topic', findProperty('topic') ?: 'orders-java'
+    systemProperty 'groupId', findProperty('groupId') ?: 'java-orders-group'
+    systemProperty 'clientId', findProperty('clientId') ?: 'consumer-a'
+}
