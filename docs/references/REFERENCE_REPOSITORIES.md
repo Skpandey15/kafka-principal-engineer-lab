@@ -29,7 +29,7 @@ package in this repository, not against secondary explanations of it.
 
 ### [spring-projects/spring-kafka](https://github.com/spring-projects/spring-kafka)
 Reference for the production Spring Kafka material in `docs/spring-kafka/` and
-`labs/lab-17-spring-kafka/`. Used to validate listener container configuration,
+`labs/lab-18-spring-kafka/`. Used to validate listener container configuration,
 error-handling and retry-topic behavior, and testing patterns. This repository's
 rule is: Spring Kafka is always explained in terms of the native Kafka mechanism
 it wraps (see `docs/architecture/KAFKA_MENTAL_MODEL.md`) — this project is the

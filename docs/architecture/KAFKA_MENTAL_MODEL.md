@@ -60,14 +60,18 @@ build that enforcement into the serialization layer.
 
 ### 3. Partitioning
 
-The partitioner decides which partition of the topic the record goes to. If a key
-is present, the default partitioner hashes it — the same key always maps to the
-same partition, which is what makes per-key ordering possible. If no key is
-present, records are distributed across partitions (the "sticky" partitioner
-batches several keyless records onto the same partition before moving on, to
-improve batching efficiency). See `docs/partitioning/` for why this single decision
-determines your ordering guarantees, your scalability ceiling, and your exposure to
-hot partitions.
+The partitioner decides which partition of the topic the record goes to. When a
+key is supplied, Kafka's standard producer partitioning behavior uses the
+serialized key to deterministically select a partition, which normally keeps
+records sharing the same key on the same partition for as long as the topic's
+partition count stays unchanged — this is what makes per-key ordering possible.
+The exact algorithm behind that mapping is version-dependent and configurable;
+it is examined precisely, including what changes if the topic is repartitioned,
+in `docs/partitioning/` and the producer/partitioning labs rather than here. If
+no key is present, records are distributed across partitions instead of being
+pinned to one. See `docs/partitioning/` for why this single decision determines
+your ordering guarantees, your scalability ceiling, and your exposure to hot
+partitions.
 
 ### 4. Batching in the `RecordAccumulator`
 
@@ -127,14 +131,58 @@ requested, from the log it already has. The trade-off is that consumer lag
 becomes a first-class, must-monitor concept: nothing stops a slow consumer from
 falling arbitrarily far behind except retention. See `docs/consumer/`.
 
-### 10. Offsets, commits, and "receiving"
+### 10. Fetch, position, processing, side effects, and committed offset are five different things
 
-A record is not "received" in any strong sense until the consumer has processed
-it and **committed** the offset past it — and even that guarantee depends on
-whether the commit happens before or after processing, and whether it is
-synchronous. This single design point is the entire reason at-least-once,
-at-most-once, and effectively-once are three different, chooseable outcomes
-rather than one fixed behavior. See `docs/delivery-semantics/`.
+It is tempting to say a consumer "received" a record once `poll()` returns it.
+That single word hides five distinct events that this repository treats as
+separate for the rest of the curriculum, because conflating them is the single
+most common source of duplicated or lost processing:
+
+1. **Broker delivery / fetch** — the broker returned bytes at a given
+   `(topic, partition, offset)` in response to a fetch request. This only
+   proves the broker had the record; it says nothing about what the consumer
+   does with it next.
+2. **Consumer position** — the consumer's in-memory next-offset-to-fetch for
+   that partition has advanced. This is local, uncommitted state, and it is
+   lost if the consumer process dies before it commits anything.
+3. **Application processing** — the application's `poll()` loop has run its
+   business logic against the record (deserialized it, validated it, updated
+   in-memory state).
+4. **External / business side effect** — something outside the consumer's own
+   memory changed because of this record: a database row written, a payment
+   charged, an email sent, a downstream event published. This is usually what
+   actually matters to the business, and Kafka has no visibility into it at
+   all.
+5. **Committed consumer-group offset** — the consumer has told the broker "this
+   group has finished up through this offset," recorded in the internal
+   `__consumer_offsets` topic. This is the only one of the five that survives
+   the consumer process restarting or a rebalance moving the partition to a
+   different consumer.
+
+**Committing an offset does not prove the business operation succeeded, and
+processing the business operation does not, by itself, commit the offset.**
+These are two independent actions an application must deliberately order, and
+the order chosen determines the failure mode on a crash:
+
+- **process → side effect → crash before commit.** On restart (or after a
+  rebalance), the group's last committed offset is still behind this record, so
+  it is fetched and processed again. If the side effect is not idempotent, it
+  happens twice — a **duplicate**. This is the shape of **at-least-once**
+  processing.
+- **commit → crash before the side effect completes.** The next consumer to own
+  the partition starts fetching *after* this offset and never runs this
+  record's business logic — a **skipped** business operation. This is the shape
+  of **at-most-once** processing, and it is rarely what an application actually
+  wants for anything that matters.
+
+Neither ordering is "wrong" in the abstract — at-most-once can be an acceptable,
+even preferable, choice where an occasional gap is cheaper than a duplicate
+(some metrics or logs, for instance). What matters is that the ordering is a
+deliberate choice. Precisely how to reason about and control this trade-off —
+manual vs. automatic commits, idempotent producers, transactions, and
+idempotent-consumer patterns — is the subject of `docs/delivery-semantics/` and
+its labs; this section exists only so you have the vocabulary and the two
+failure shapes in mind before you get there.
 
 ## What this model does and does not guarantee
 
