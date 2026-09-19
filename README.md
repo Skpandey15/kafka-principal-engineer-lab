@@ -98,6 +98,12 @@ planned structure and the work-package plan that builds it out.
 3. Stand up the local cluster and work through
    [`labs/lab-01-first-kafka-cluster`](labs/lab-01-first-kafka-cluster/README.md)
    (see the roadmap's work-package plan for what's available now vs. planned).
+4. Skim [`docs/references/REFERENCE_REPOSITORIES.md`](docs/references/REFERENCE_REPOSITORIES.md)
+   for the external repositories this curriculum checks itself against (and
+   what each one is and isn't authoritative for), and
+   [`docs/roadmap/PRINCIPAL_ENGINEER_FAILURE_MATRIX.md`](docs/roadmap/PRINCIPAL_ENGINEER_FAILURE_MATRIX.md)
+   for the full map of failures this repository builds toward across every
+   topic area, not just the ones already implemented.
 
 ## Prerequisites
 
