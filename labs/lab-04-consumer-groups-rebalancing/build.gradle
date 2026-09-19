@@ -1,0 +1,74 @@
+// Lab 04 — Consumer Groups & Rebalancing Engineering (WP-05).
+//
+// Same dependency set and versions as lab-02 (WP-03) and lab-03 (WP-04) --
+// a separate, self-contained Gradle project, per this repository's
+// established one-project-per-lab convention. See lab-03's README ("Why a
+// separate project") for the rationale; not repeated here.
+
+import java.time.Duration
+
+plugins {
+    id 'java'
+}
+
+group = 'com.kafkalab'
+version = '0.1.0'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'org.apache.kafka:kafka-clients:4.3.1'
+
+    implementation 'org.slf4j:slf4j-api:2.0.19'
+    runtimeOnly 'org.slf4j:slf4j-simple:2.0.19'
+
+    testImplementation 'org.junit.jupiter:junit-jupiter:6.1.3'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+
+    testImplementation 'org.testcontainers:testcontainers:2.0.5'
+    testImplementation 'org.testcontainers:testcontainers-junit-jupiter:2.0.5'
+    testImplementation 'org.testcontainers:testcontainers-kafka:2.0.5'
+}
+
+test {
+    useJUnitPlatform()
+    timeout = Duration.ofMinutes(5)
+    testLogging {
+        events = ['passed', 'skipped', 'failed']
+        exceptionFormat = 'full'
+    }
+}
+
+// --- Runnable experiments -------------------------------------------------
+
+tasks.register('runOrderProducer', JavaExec) {
+    group = 'lab experiments'
+    description = 'Seed the lab topic with a finite burst of keyed order events.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.consumergroups.producer.OrderEventProducerApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: 'localhost:9092'
+    systemProperty 'topic', findProperty('topic') ?: 'orders.consumer-group.lab'
+    systemProperty 'count', findProperty('count') ?: '30'
+    systemProperty 'mode', findProperty('mode') ?: 'burst'
+    systemProperty 'delayMs', findProperty('delayMs') ?: '500'
+}
+
+tasks.register('runConsumer', JavaExec) {
+    group = 'lab experiments'
+    description = 'Run one named consumer-group member. Run multiple instances with different -PclientId, same -PgroupId, to observe partition ownership and rebalancing.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.consumergroups.consumer.ConsumerGroupMemberApp'
+    standardInput = System.in
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: 'localhost:9092'
+    systemProperty 'topic', findProperty('topic') ?: 'orders.consumer-group.lab'
+    systemProperty 'groupId', findProperty('groupId') ?: 'order-processing-service'
+    systemProperty 'clientId', findProperty('clientId') ?: 'consumer-1'
+    systemProperty 'processingDelayMs', findProperty('processingDelayMs') ?: '0'
+}
