@@ -73,7 +73,7 @@ looking anything up.
 | Milestone | Title | You can... | Assessed by |
 |---|---|---|---|
 | M0 | Foundation | Explain Kafka's architecture: brokers, topics, partitions, replication, KRaft, and why Kafka exists relative to queues/DBs. | `docs/principal-engineer/` M0 checkpoint + `interview/fundamentals/` (both added once the fundamentals content lands) |
-| M1 | Developer | Implement reliable Java producers and consumers, reason about serialization, and read consumer group state. | `lab-02` through `lab-06` |
+| M1 | Developer | Implement reliable Java producers and consumers, reason about serialization, and read consumer group state. | `lab-02` through `lab-07` |
 | M2 | Senior Engineer | Design topics, partition keys, retry/DLQ strategy, and schema evolution policy; explain delivery semantics precisely, including exactly what Kafka's own exactly-once semantics do and do not guarantee about your business logic. | `lab-07` through `lab-13`, `lab-16`, `lab-19` |
 | M3 | Staff Engineer | Operate a cluster under failure, benchmark it, evolve schemas safely, and diagnose incidents from metrics and logs alone. | `lab-20` through `lab-24`, `docs/troubleshooting/`, [`PRINCIPAL_ENGINEER_FAILURE_MATRIX.md`](PRINCIPAL_ENGINEER_FAILURE_MATRIX.md) |
 | M4 | Principal Engineer | Design organization-scale event platforms and defend architecture decisions with trade-offs, not opinions — including partition lifecycle, cluster rebalancing, multi-cluster/DR, platform governance, and cost. | `docs/principal-engineer/`, `adrs/`, `system-design/`, the Level 5/6 topics below |
@@ -155,7 +155,7 @@ one's future WP is expected to cover.
 | 1 | Kafka fundamentals | What is a broker, partition, offset, ISR, controller? | `docs/fundamentals/` | `lab-01`, `lab-02` |
 | 2 | Producer internals | What happens inside `producer.send()`? | `docs/producer/` | `lab-02`, `lab-10` |
 | 3 | Consumer internals | How does polling, committing, and rebalancing actually work? | `docs/consumer/`, `docs/consumer-groups/` | `lab-02`, `lab-05`, `lab-07` |
-| 4 | Partitioning | Why do partition keys matter more than almost any other decision? | `docs/partitioning/` | `lab-06` |
+| 4 | Partitioning | Why do partition keys matter more than almost any other decision? | `docs/partitioning/` | `lab-03` |
 | 5 | Replication & failure | How does Kafka survive broker loss without losing data? | `docs/replication/` | `lab-08`, `lab-09` |
 | 6 | KRaft | How does the cluster agree on metadata without ZooKeeper? | `docs/kraft/` | `lab-08`, `lab-09` |
 | 7 | Storage internals | Why is Kafka fast? What is a segment, index, and compaction? | `docs/storage/` | `lab-01` (inspection) |
@@ -305,8 +305,8 @@ refined as earlier WPs surface new information; it is not a fixed contract.
 | WP-01 | Repository foundation: README, this roadmap, reference repositories, Kafka mental model, contributing guide, `.gitignore`, license. | Done |
 | WP-02 | Local KRaft environment: Docker Compose cluster, topic/partition/offset inspection, CLI walkthrough. (`lab-01-first-kafka-cluster`) | Done |
 | WP-02A | Curriculum, reference-architecture, and Principal Engineer learning enhancement (this document, the reference-repository matrix, and the failure matrix). No implementation. | Done |
-| WP-03 | Native Java producer/consumer fundamentals (no Spring). (`lab-02-native-java-producer-consumer`) | **This work package.** |
-| WP-04 | Partitioning experiments: good vs. bad keys, hot partitions. | Planned |
+| WP-03 | Native Java producer/consumer fundamentals (no Spring). (`lab-02-native-java-producer-consumer`) | Done |
+| WP-04 | Partitioning experiments: good vs. bad keys, hot partitions. (`lab-03-partitioning-ordering`) | **This work package.** |
 | WP-05 | Consumer groups and rebalancing, including cooperative rebalancing and static membership. | Planned |
 | WP-06 | Replication and broker failure experiments; ISR and `min.insync.replicas`. | Planned |
 | WP-07 | KRaft controller quorum and controller failure. | Planned |
@@ -356,17 +356,23 @@ interleaved into it, specifically so that adding them required renumbering
 nothing — every existing WP number, lab number, and file path in this
 repository remains exactly what it was before this document was extended.
 
-**A note on WP-03's lab number.** Earlier drafts of this roadmap implied
-separate `lab-03-java-producer` and `lab-04-java-consumer` labs. WP-03
-instead delivers one combined lab, `lab-02-native-java-producer-consumer`,
+**A note on WP-03 and WP-04's lab numbers.** Earlier drafts of this
+roadmap implied separate `lab-03-java-producer` and `lab-04-java-consumer`
+labs, with partitioning arriving later as `lab-06-partitioning`. WP-03
+instead delivered one combined lab, `lab-02-native-java-producer-consumer`,
 covering both roles together — they share a single central question (what
 happens between `producer.send()` and a Java consumer receiving the
 record) and splitting them into two labs would have meant re-deriving that
-same end-to-end story twice. `lab-02` was the next sequential unclaimed
-lab number (WP-02 used only `lab-01`), so no existing lab or WP number
-changed to make room for it; `lab-03`/`lab-04` are simply retired as
-planned-but-never-created slots rather than being renumbered into something
-else.
+same end-to-end story twice. WP-04 then claimed `lab-03-partitioning-ordering`,
+the next sequential unclaimed number, rather than the originally-planned
+`lab-06` — partitioning follows producer/consumer fundamentals directly in
+this repository's actual delivery order, and there is no reason to leave a
+numbering gap (`lab-03` through `lab-05`) just to preserve a slot
+(`lab-06`) from an earlier draft's plan. In both cases, no *already-created*
+lab or WP number changed to make room — `lab-03`/`lab-04` (as
+producer/consumer labs) and `lab-06` (as the partitioning lab) are simply
+retired as planned-but-never-created slots, the same pattern established
+when WP-03 landed.
 
 ## Recommended learning order
 
