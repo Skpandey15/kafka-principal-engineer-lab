@@ -57,8 +57,8 @@ looking anything up.
 |---|---|---|---|
 | M0 | Foundation | Explain Kafka's architecture: brokers, topics, partitions, replication, KRaft, and why Kafka exists relative to queues/DBs. | `docs/principal-engineer/` M0 checkpoint + `interview/fundamentals/` (both added once the fundamentals content lands) |
 | M1 | Developer | Implement reliable Java producers and consumers, reason about serialization, and read consumer group state. | `lab-03` through `lab-06` |
-| M2 | Senior Engineer | Design topics, partition keys, retry/DLQ strategy, and schema evolution policy; explain delivery semantics precisely. | `lab-07` through `lab-13`, `lab-18` |
-| M3 | Staff Engineer | Operate a cluster under failure, benchmark it, evolve schemas safely, and diagnose incidents from metrics and logs alone. | `lab-19` through `lab-24`, `docs/troubleshooting/` |
+| M2 | Senior Engineer | Design topics, partition keys, retry/DLQ strategy, and schema evolution policy; explain delivery semantics precisely. | `lab-07` through `lab-13`, `lab-16`, `lab-19` |
+| M3 | Staff Engineer | Operate a cluster under failure, benchmark it, evolve schemas safely, and diagnose incidents from metrics and logs alone. | `lab-20` through `lab-24`, `docs/troubleshooting/` |
 | M4 | Principal Engineer | Design organization-scale event platforms and defend architecture decisions with trade-offs, not opinions. | `docs/principal-engineer/`, `adrs/`, `system-design/` |
 | M5 | Kafka Deep Dive | Reason about Kafka internals, failure modes, capacity, multi-cluster/multi-region architecture, and source-level behavior. | `docs/principal-engineer/KAFKA_SOURCE_CODE_READING_GUIDE.md`, `interview/principal/` |
 
@@ -87,14 +87,14 @@ delivery semantics) at increasing depth. Each row below will become one or more
 | 9 | Serialization & schema governance | How do you evolve a schema without breaking consumers? | `docs/serialization/`, `docs/schema-registry/` | `lab-13` |
 | 10 | Kafka Connect | How do you move data in/out of Kafka without hand-written glue? | `docs/kafka-connect/` | `lab-14` |
 | 11 | CDC + Debezium | How do database changes become an event stream? | `docs/kafka-connect/` | `lab-15` |
-| 12 | Transactional outbox | How do you avoid the dual-write problem? | `docs/patterns/` | `lab-22` |
-| 13 | Kafka Streams | How do you build stateful stream processing on top of Kafka? | `docs/kafka-streams/` | `lab-16` |
-| 14 | Spring Kafka | How does a production framework map onto the primitives you already know? | `docs/spring-kafka/` | `lab-17` |
-| 15 | Event-driven patterns | Which pattern fits which problem, and when should you avoid Kafka entirely? | `docs/patterns/` | `lab-18`, `lab-22` |
-| 16 | Observability | What do you monitor, and what does each signal mean? | `docs/observability/` | `lab-19` |
-| 17 | Performance engineering | What actually limits throughput and latency? | `docs/performance/` | `lab-20` |
+| 12 | Transactional outbox | How do you avoid the dual-write problem? | `docs/patterns/` | `lab-16` |
+| 13 | Kafka Streams | How do you build stateful stream processing on top of Kafka? | `docs/kafka-streams/` | `lab-17` |
+| 14 | Spring Kafka | How does a production framework map onto the primitives you already know? | `docs/spring-kafka/` | `lab-18` |
+| 15 | Event-driven patterns | Which pattern fits which problem, and when should you avoid Kafka entirely? | `docs/patterns/` | `lab-16`, `lab-19` |
+| 16 | Observability | What do you monitor, and what does each signal mean? | `docs/observability/` | `lab-20` |
+| 17 | Performance engineering | What actually limits throughput and latency? | `docs/performance/` | `lab-21` |
 | 18 | Capacity planning | How do you size a cluster from a workload description? | `docs/performance/` | `lab-24` |
-| 19 | Security | How do you secure a cluster without breaking it? | `docs/security/` | `lab-21` |
+| 19 | Security | How do you secure a cluster without breaking it? | `docs/security/` | `lab-22` |
 | 20 | Failure engineering | What actually happens when you kill a broker, a consumer, or the network? | `docs/failure-recovery/` | `lab-09`, `lab-23` |
 | 21 | Troubleshooting | Given symptoms and metrics, what is the diagnostic sequence? | `docs/troubleshooting/` | all failure labs |
 | 22 | System design | How do you design a real platform end to end? | `system-design/` | `lab-25` |
@@ -110,8 +110,8 @@ refined as earlier WPs surface new information; it is not a fixed contract.
 
 | WP | Scope | Status |
 |---|---|---|
-| WP-01 | Repository foundation: README, this roadmap, reference repositories, Kafka mental model, contributing guide, `.gitignore`, license. | **This work package.** |
-| WP-02 | Local KRaft environment: Docker Compose cluster, topic/partition/offset inspection, CLI walkthrough. | Planned |
+| WP-01 | Repository foundation: README, this roadmap, reference repositories, Kafka mental model, contributing guide, `.gitignore`, license. | Done |
+| WP-02 | Local KRaft environment: Docker Compose cluster, topic/partition/offset inspection, CLI walkthrough. (`lab-01-first-kafka-cluster`) | **This work package.** |
 | WP-03 | Native Java producer/consumer fundamentals (no Spring). | Planned |
 | WP-04 | Partitioning experiments: good vs. bad keys, hot partitions. | Planned |
 | WP-05 | Consumer groups and rebalancing, including cooperative rebalancing and static membership. | Planned |
@@ -119,26 +119,33 @@ refined as earlier WPs surface new information; it is not a fixed contract.
 | WP-07 | KRaft controller quorum and controller failure. | Planned |
 | WP-08 | Idempotent producers and transactions; delivery semantics experiments. | Planned |
 | WP-09 | Schema evolution: Avro/Protobuf + Schema Registry, compatibility modes. | Planned |
-| WP-10 | Kafka Connect pipeline (source + sink). | Planned |
-| WP-11 | Debezium CDC pipeline against PostgreSQL. | Planned |
-| WP-12 | Transactional outbox pattern, built on the CDC pipeline. | Planned |
-| WP-13 | Kafka Streams applications (DSL + Processor API, joins, windows, state stores). | Planned |
-| WP-14 | Spring Kafka in production style: listener containers, retry topics, DLQ, transactions. | Planned |
-| WP-15 | Retry/DLQ patterns and idempotent-consumer/deduplication patterns. | Planned |
-| WP-16 | Observability stack: JMX → Prometheus → Grafana, key dashboards. | Planned |
-| WP-17 | Performance benchmarking harness and documented results. | Planned |
-| WP-18 | Security: TLS, SASL/SCRAM, ACLs (local-development-only patterns clearly marked). | Planned |
-| WP-19 | Failure-injection lab suite (broker kill, network partition, slow consumer, disk pressure). | Planned |
-| WP-20 | Capacity planning workbook with worked examples. | Planned |
-| WP-21 | Production simulation lab combining prior labs into one running system. | Planned |
-| WP-22 | System design labs: e-commerce, payments, fraud detection, notifications, clickstream, booking spikes. | Planned |
-| WP-23 | ADR set (ADR-001 through ADR-018), written only after the supporting lab/design evidence exists. | Planned |
+| WP-10 | Kafka Connect pipeline (source + sink). (`lab-14-kafka-connect`) | Planned |
+| WP-11 | Debezium CDC pipeline against PostgreSQL. (`lab-15-debezium-cdc`) | Planned |
+| WP-12 | Transactional outbox pattern, built directly on the CDC pipeline from WP-11. (`lab-16-outbox`) | Planned |
+| WP-13 | Kafka Streams applications (DSL + Processor API, joins, windows, state stores). (`lab-17-kafka-streams`) | Planned |
+| WP-14 | Spring Kafka in production style: listener containers, retry topics, DLQ, transactions. (`lab-18-spring-kafka`) | Planned |
+| WP-15 | Retry/DLQ patterns and idempotent-consumer/deduplication patterns. (`lab-19-retry-dlq`) | Planned |
+| WP-16 | Observability stack: JMX → Prometheus → Grafana, key dashboards. (`lab-20-observability`) | Planned |
+| WP-17 | Performance benchmarking harness and documented results. (`lab-21-performance`) | Planned |
+| WP-18 | Security: TLS, SASL/SCRAM, ACLs (local-development-only patterns clearly marked). (`lab-22-security`) | Planned |
+| WP-19 | Failure-injection lab suite (broker kill, network partition, slow consumer, disk pressure). (`lab-23-failure-injection`) | Planned |
+| WP-20 | Capacity planning workbook with worked examples. (`lab-24-capacity-planning`) | Planned |
+| WP-21 | Production simulation lab combining prior labs into one running system. (`lab-25-production-simulation`) | Planned |
+| WP-22 | System design labs: e-commerce, payments, fraud detection, notifications, clickstream, booking spikes. (`system-design/`) | Planned |
+| WP-23 | ADR set (ADR-001 through ADR-018), written only after the supporting lab/design evidence exists. (`adrs/`) | Planned |
 | WP-24 | Principal Engineer decision framework, source-code reading guide, interview question banks, milestone assessments. | Planned |
 | WP-25+ | CI (build, unit tests, integration tests, lint, doc-link checks), introduced incrementally. | Planned |
 
 WPs are not strictly sequential milestones — several can proceed once their
-prerequisites exist — but the order above reflects genuine dependencies (for
-example, transactions before the outbox pattern, and Connect before Debezium).
+prerequisites exist — but the order above reflects genuine dependencies: for
+example, transactions (WP-08) before the outbox pattern, and Kafka Connect
+(WP-10) before Debezium CDC (WP-11) before the transactional outbox (WP-12),
+since this repository's outbox lab is built directly on top of the CDC pipeline
+rather than as a standalone pattern. Lab numbers therefore run
+`lab-14-kafka-connect` → `lab-15-debezium-cdc` → `lab-16-outbox` consecutively,
+even though the outbox *pattern* is conceptually closer to the event-driven
+patterns covered later — the numbering follows build dependency order, not
+topic difficulty.
 
 ## Recommended learning order
 

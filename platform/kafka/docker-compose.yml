@@ -1,0 +1,149 @@
+# Local, single-node KRaft Kafka environment for the learning labs in this
+# repository. See platform/kafka/README.md for a full explanation of every
+# value below — nothing here should be treated as "just boilerplate."
+#
+# This topology (one node acting as both broker and controller) is a
+# deliberate learning/local-development simplification. It is NOT the
+# recommended production topology. See platform/kafka/README.md.
+
+services:
+  kafka:
+    # Pinned to an explicit version, never `latest` — see platform/kafka/README.md
+    # ("Selected Kafka version") for why 4.3.1 was chosen and how to verify a
+    # newer pin yourself before changing it.
+    image: apache/kafka:4.3.1
+    container_name: kafka
+    hostname: kafka
+    ports:
+      # Only the client-facing listener is published to the host. The
+      # controller listener never needs to be reachable from outside the
+      # container, even in this single-node setup.
+      - "9092:9092"
+    environment:
+      # --- Identity -------------------------------------------------------
+      # Every node in a KRaft cluster needs a unique numeric ID, whether it
+      # is acting as a broker, a controller, or (as here) both at once.
+      KAFKA_NODE_ID: 1
+
+      # --- Roles (this is what makes it KRaft, not ZooKeeper) --------------
+      # A node's process.roles says what it does in the cluster. A single
+      # node can legally hold both roles at once, which is exactly what
+      # makes a one-container learning cluster possible without ZooKeeper.
+      # Production clusters commonly separate these roles onto dedicated
+      # nodes instead — see the Production Contrast table in the lab README.
+      KAFKA_PROCESS_ROLES: "broker,controller"
+
+      # --- Listeners vs. advertised listeners ------------------------------
+      # `listeners` is where THIS PROCESS binds and accepts connections,
+      # inside the container's own network namespace.
+      #   - PLAINTEXT_HOST (:9092) is the port published to your host machine.
+      #   - PLAINTEXT (:19092) is for other containers on the same Docker
+      #     network to reach this broker by service name. WP-02 has no other
+      #     containers, but this listener is kept so the pattern is already
+      #     correct for later work packages (e.g. a UI or a second service)
+      #     that will join this network without reconfiguring the broker.
+      #   - CONTROLLER (:29093) carries only KRaft controller-quorum traffic
+      #     and is never a client-facing listener.
+      KAFKA_LISTENERS: "CONTROLLER://:29093,PLAINTEXT_HOST://:9092,PLAINTEXT://:19092"
+
+      # `advertised.listeners` is what this process tells CLIENTS to connect
+      # to — which can legitimately be a different address than what it
+      # bound to. This is the single most common source of "the container is
+      # running but no client can talk to it": a client outside Docker must
+      # be told `localhost:9092`, while a client inside the Docker network
+      # must be told `kafka:19092` — the container cannot advertise the same
+      # address to both. See "CLI cannot connect" in the lab's Troubleshooting
+      # section.
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT_HOST://localhost:9092,PLAINTEXT://kafka:19092"
+
+      # Maps each listener name to the security protocol it speaks. PLAINTEXT
+      # here means "no TLS, no SASL" — acceptable only because this is a
+      # local, single-user learning environment on a loopback-only port.
+      # See docs/security/ (later WP) for why this is never appropriate
+      # beyond local development.
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+
+      # Which listener brokers use to talk to each other. Irrelevant with a
+      # single broker today, but required by the broker's configuration
+      # validation, and this is the value multi-broker clusters (a later WP)
+      # depend on to route replication traffic correctly.
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+
+      # Which listener carries controller-quorum (metadata-Raft) traffic.
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+
+      # --- Controller quorum ------------------------------------------------
+      # The set of controller voters, as `nodeId@host:port`. With one node,
+      # this cluster's metadata quorum has exactly one voter and therefore no
+      # tolerance for controller loss — that trade-off is intentional here
+      # and is explained in docs/fundamentals/KAFKA_CLUSTER_FUNDAMENTALS.md
+      # and revisited for real in the WP-07 controller-quorum-failure lab.
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:29093"
+
+      # --- Cluster identity -------------------------------------------------
+      # KRaft clusters are identified by a cluster ID baked into on-disk
+      # storage the first time a node starts. This value is the same fixed,
+      # non-secret example ID Apache Kafka's own docker-compose examples use
+      # (docker/examples/docker-compose-files in apache/kafka) — reusing it
+      # keeps this lab's output comparable to upstream documentation. It is
+      # not a credential; generate a fresh one (`kafka-storage.sh random-uuid`)
+      # for any cluster that isn't purely a local learning exercise.
+      CLUSTER_ID: "4L6g3nShT-eMCtK--X86sw"
+
+      # --- Where the log actually lives --------------------------------
+      # Overrides the image's default (`/tmp/kraft-combined-logs`, which on
+      # some Docker setups can be cleared independently of the container
+      # lifecycle) with an explicit path backed by the named volume below.
+      # This directory holds BOTH the KRaft metadata log and every topic
+      # partition's log segments, because `metadata.log.dir` is not set
+      # separately and defaults to the first entry of `log.dirs`. This is
+      # exactly what Experiment 9 (restart) and Experiment 10 (delete
+      # storage) are demonstrating the consequences of.
+      KAFKA_LOG_DIRS: "/var/lib/kafka/data"
+
+      # --- Single-node-appropriate replication defaults ----------------
+      # These internal topics default to replication factor 3 in the image,
+      # which cannot be satisfied by a one-broker cluster and would prevent
+      # startup. Setting them to 1 here is a single-node necessity, not a
+      # durability recommendation — see the Production Contrast table.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: 1
+
+      # A production-sized cluster staggers new-consumer-group rebalances to
+      # let a burst of consumers join together before assigning partitions.
+      # There is exactly one consumer in these labs, so the delay only slows
+      # down the feedback loop; 0 keeps the lab responsive.
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+
+    volumes:
+      # Named volume so Kafka's on-disk log (data + KRaft metadata) survives
+      # `docker compose down` and container recreation, and is only removed
+      # by an explicit, deliberate action (`docker compose down -v` or
+      # `docker volume rm`). See Experiment 9 (restart) and Experiment 10
+      # (destructive delete) in the lab README.
+      - kafka-data:/var/lib/kafka/data
+
+    healthcheck:
+      # Asks the broker itself to report the API versions it supports. This
+      # only succeeds once the broker is actually accepting Kafka protocol
+      # connections — a much stronger signal than "the container process is
+      # running," which is why `docker compose ps` distinguishes STARTING
+      # from HEALTHY instead of just showing "Up". See "Kafka container does
+      # not start" in Troubleshooting for how this differs from the process
+      # merely being alive.
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+volumes:
+  # Declared explicitly (rather than an anonymous volume) so it has a stable
+  # name you can inspect with `docker volume ls` / `docker volume inspect`,
+  # and so `docker compose down -v` has an unambiguous, single volume to
+  # remove.
+  kafka-data:
+    name: kafka-principal-engineer-lab_kafka-data

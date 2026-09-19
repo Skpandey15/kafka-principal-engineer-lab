@@ -95,8 +95,9 @@ planned structure and the work-package plan that builds it out.
 2. Read [`docs/architecture/KAFKA_MENTAL_MODEL.md`](docs/architecture/KAFKA_MENTAL_MODEL.md),
    which answers: what actually happens between `producer.send()` and a consumer
    receiving the record?
-3. Proceed to `labs/lab-01-first-kafka-cluster` once it lands (see the roadmap's
-   work-package plan for what's available now vs. planned).
+3. Stand up the local cluster and work through
+   [`labs/lab-01-first-kafka-cluster`](labs/lab-01-first-kafka-cluster/README.md)
+   (see the roadmap's work-package plan for what's available now vs. planned).
 
 ## Prerequisites
 
