@@ -1,0 +1,146 @@
+// Lab 03 — Kafka Partitioning & Ordering Engineering (WP-04).
+//
+// Same dependency set and versions as lab-02-native-java-producer-consumer
+// (WP-03) -- this lab is a separate, self-contained Gradle project rather
+// than a shared multi-module build, matching this repository's existing
+// one-project-per-lab convention (lab-01 and lab-02 each own everything
+// they need). See this lab's README ("Why a separate project") for why
+// that convention was kept rather than introducing a multi-module Gradle
+// structure in this work package.
+
+import java.time.Duration
+
+plugins {
+    id 'java'
+}
+
+group = 'com.kafkalab'
+version = '0.1.0'
+
+java {
+    // Same Java 21 (LTS) baseline WP-03 established -- see that lab's
+    // README for the full rationale. Not repeated here.
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'org.apache.kafka:kafka-clients:4.3.1'
+
+    implementation 'org.slf4j:slf4j-api:2.0.19'
+    runtimeOnly 'org.slf4j:slf4j-simple:2.0.19'
+
+    testImplementation 'org.junit.jupiter:junit-jupiter:6.1.3'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+
+    testImplementation 'org.testcontainers:testcontainers:2.0.5'
+    testImplementation 'org.testcontainers:testcontainers-junit-jupiter:2.0.5'
+    testImplementation 'org.testcontainers:testcontainers-kafka:2.0.5'
+}
+
+test {
+    useJUnitPlatform()
+    timeout = Duration.ofMinutes(5)
+    testLogging {
+        events = ['passed', 'skipped', 'failed']
+        exceptionFormat = 'full'
+    }
+}
+
+// --- Runnable experiments -------------------------------------------------
+// One task per experiment in the lab README, same pattern WP-03 used.
+// Configurable values are Gradle project properties (-Pname=value).
+
+tasks.register('runBusinessOrdering', JavaExec) {
+    group = 'lab experiments'
+    description = 'Experiment: order-lifecycle events keyed by orderId -- partition affinity and within-partition ordering, proven by producing then consuming.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.partitioning.producer.BusinessOrderingApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: 'localhost:9092'
+    systemProperty 'topic', findProperty('topic') ?: 'orders-lifecycle'
+}
+
+tasks.register('runNullKeyDistribution', JavaExec) {
+    group = 'lab experiments'
+    description = 'Experiment: null-key distribution at measurable scale -- observed, not assumed.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.partitioning.producer.NullKeyDistributionApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: 'localhost:9092'
+    systemProperty 'topic', findProperty('topic') ?: 'distribution-demo'
+    systemProperty 'count', findProperty('count') ?: '10000'
+}
+
+tasks.register('runGoodCardinalityDistribution', JavaExec) {
+    group = 'lab experiments'
+    description = 'Experiment: high-cardinality keys -- distribution report.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.partitioning.producer.GoodCardinalityDistributionApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: 'localhost:9092'
+    systemProperty 'topic', findProperty('topic') ?: 'distribution-demo'
+    systemProperty 'count', findProperty('count') ?: '10000'
+}
+
+tasks.register('runLowCardinalityDistribution', JavaExec) {
+    group = 'lab experiments'
+    description = 'Experiment: low-cardinality key (country) -- distribution report showing most partitions stay empty.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.partitioning.producer.LowCardinalityDistributionApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: 'localhost:9092'
+    systemProperty 'topic', findProperty('topic') ?: 'distribution-demo-12p'
+    systemProperty 'count', findProperty('count') ?: '10000'
+}
+
+tasks.register('runHotKeyDistribution', JavaExec) {
+    group = 'lab experiments'
+    description = 'Experiment: skewed key workload -- one hot key dominates a partition.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.partitioning.producer.HotKeyDistributionApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: 'localhost:9092'
+    systemProperty 'topic', findProperty('topic') ?: 'distribution-demo'
+    systemProperty 'count', findProperty('count') ?: '10000'
+}
+
+tasks.register('runPartitionMappingBefore', JavaExec) {
+    group = 'lab experiments'
+    description = 'Partition-count-change experiment, phase 1: record key->partition mapping before expansion.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.partitioning.producer.PartitionCountChangeApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: 'localhost:9092'
+    systemProperty 'topic', findProperty('topic') ?: 'partition-expansion-demo'
+    systemProperty 'phase', 'before'
+}
+
+tasks.register('runPartitionMappingAfter', JavaExec) {
+    group = 'lab experiments'
+    description = 'Partition-count-change experiment, phase 2: record key->partition mapping after expansion and compare.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.partitioning.producer.PartitionCountChangeApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: 'localhost:9092'
+    systemProperty 'topic', findProperty('topic') ?: 'partition-expansion-demo'
+    systemProperty 'phase', 'after'
+}
+
+tasks.register('runCustomPartitionerDemo', JavaExec) {
+    group = 'lab experiments'
+    description = 'Experiment: a small educational custom Partitioner, and why it is a long-lived compatibility contract.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.partitioning.producer.CustomPartitionerDemoApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: 'localhost:9092'
+    systemProperty 'topic', findProperty('topic') ?: 'orders-lifecycle'
+}
+
+tasks.register('runConsumerParallelism', JavaExec) {
+    group = 'lab experiments'
+    description = 'Experiment: partition count as a ceiling on useful consumer-group parallelism. Run multiple instances with different -PclientId.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.partitioning.consumer.ConsumerParallelismApp'
+    standardInput = System.in
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: 'localhost:9092'
+    systemProperty 'topic', findProperty('topic') ?: 'distribution-demo'
+    systemProperty 'groupId', findProperty('groupId') ?: 'partitioning-lab-group'
+    systemProperty 'clientId', findProperty('clientId') ?: 'consumer-a'
+}
