@@ -74,7 +74,7 @@ looking anything up.
 |---|---|---|---|
 | M0 | Foundation | Explain Kafka's architecture: brokers, topics, partitions, replication, KRaft, and why Kafka exists relative to queues/DBs. | `docs/principal-engineer/` M0 checkpoint + `interview/fundamentals/` (both added once the fundamentals content lands) |
 | M1 | Developer | Implement reliable Java producers and consumers, reason about serialization, and read consumer group state. | `lab-02` through `lab-04` |
-| M2 | Senior Engineer | Design topics, partition keys, retry/DLQ strategy, and schema evolution policy; explain delivery semantics precisely, including exactly what Kafka's own exactly-once semantics do and do not guarantee about your business logic. | `lab-08` through `lab-13`, `lab-16`, `lab-19` |
+| M2 | Senior Engineer | Design topics, partition keys, retry/DLQ strategy, and schema evolution policy; explain delivery semantics precisely, including exactly what Kafka's own exactly-once semantics do and do not guarantee about your business logic. | `lab-05`, `lab-08` through `lab-13`, `lab-16`, `lab-19` |
 | M3 | Staff Engineer | Operate a cluster under failure, benchmark it, evolve schemas safely, and diagnose incidents from metrics and logs alone. | `lab-20` through `lab-24`, `docs/troubleshooting/`, [`PRINCIPAL_ENGINEER_FAILURE_MATRIX.md`](PRINCIPAL_ENGINEER_FAILURE_MATRIX.md) |
 | M4 | Principal Engineer | Design organization-scale event platforms and defend architecture decisions with trade-offs, not opinions — including partition lifecycle, cluster rebalancing, multi-cluster/DR, platform governance, and cost. | `docs/principal-engineer/`, `adrs/`, `system-design/`, the Level 5/6 topics below |
 | M5 | Kafka Deep Dive | Reason about Kafka internals, failure modes, capacity, multi-cluster/multi-region architecture, and source-level behavior. | `docs/principal-engineer/KAFKA_SOURCE_CODE_READING_GUIDE.md`, `interview/principal/` |
@@ -159,12 +159,12 @@ one's future WP is expected to cover.
 | 5 | Replication & failure | How does Kafka survive broker loss without losing data? | `docs/replication/` | `lab-08`, `lab-09` |
 | 6 | KRaft | How does the cluster agree on metadata without ZooKeeper? | `docs/kraft/` | `lab-08`, `lab-09` |
 | 7 | Storage internals | Why is Kafka fast? What is a segment, index, and compaction? | `docs/storage/` | `lab-01` (inspection) |
-| 8 | Delivery semantics | What does "exactly-once" really mean, and when does it lie? | `docs/delivery-semantics/` | `lab-10`, `lab-11`, `lab-12` |
+| 8 | Delivery semantics | What does "exactly-once" really mean, and when does it lie? | `docs/delivery-semantics/` | `lab-05` (offset-commit-driven at-most-once/at-least-once fundamentals, plus an introductory idempotent-consumer experiment); `lab-10`, `lab-11`, `lab-12` (Kafka-native idempotent producers, transactions, and EOS, built in WP-08) |
 | 9 | Serialization & schema governance | How do you evolve a schema without breaking consumers? (Note: Schema Registry itself is a Confluent-ecosystem concept layered on top of Kafka, not a Kafka broker feature — see the reference-repositories boundary note above.) | `docs/serialization/`, `docs/schema-registry/` | `lab-13` |
 | 10 | Kafka Connect | How do you move data in/out of Kafka without hand-written glue? | `docs/kafka-connect/` | `lab-14` |
 | 11 | CDC + Debezium | How do database changes become an event stream? | `docs/kafka-connect/` | `lab-15` |
 | 12 | Transactional outbox | How do you avoid the dual-write problem? | `docs/patterns/` | `lab-16` |
-| 13 | Idempotent consumer & business exactly-once | Kafka delivery guarantees ≠ business exactly-once processing — where is *your* idempotency boundary? | `docs/patterns/` | Conceptually anchored directly after outbox (row 12); hands-on lab delivered in `lab-19` alongside retry/DLQ (WP-15) |
+| 13 | Idempotent consumer & business exactly-once | Kafka delivery guarantees ≠ business exactly-once processing — where is *your* idempotency boundary? | `docs/patterns/` | Introduced early, at the level of a single `eventId` check against a durable store, in `lab-05` (WP-06); conceptually anchored directly after outbox (row 12) for its full production treatment, with the hands-on lab delivered in `lab-19` alongside retry/DLQ (WP-15) |
 | 14 | Kafka Streams | How do you build stateful stream processing on top of Kafka? | `docs/kafka-streams/` | `lab-17` |
 | 15 | Spring Kafka | How does a production framework map onto the primitives you already know? | `docs/spring-kafka/` | `lab-18` |
 | 16 | Event-driven patterns (broader taxonomy) | Which pattern fits which problem, and when should you avoid Kafka entirely? | `docs/patterns/` | `lab-16`, `lab-19` |
@@ -308,7 +308,8 @@ refined as earlier WPs surface new information; it is not a fixed contract.
 | WP-03 | Native Java producer/consumer fundamentals (no Spring). (`lab-02-native-java-producer-consumer`) | Done |
 | WP-04 | Partitioning experiments: good vs. bad keys, hot partitions. (`lab-03-partitioning-ordering`) | Done |
 | WP-05 | Consumer groups and rebalancing, including cooperative rebalancing and static membership. (`lab-04-consumer-groups-rebalancing`) | Done |
-| WP-06 | Replication and broker failure experiments; ISR and `min.insync.replicas`. | **This work package.** |
+| WP-06 | Offset management and delivery semantics: record offset vs. consumer position vs. committed offset, `commitSync`/`commitAsync`, auto-commit vs. manual commit, the at-most-once and at-least-once failure windows, an introductory idempotent-consumer experiment, batch-commit boundaries, per-partition offset tracking, and the rebalance/commit-strategy interaction. (`lab-05-offset-management-delivery-semantics`) | Done |
+| WP-06A | Replication and broker failure experiments; ISR and `min.insync.replicas`. | Current |
 | WP-07 | KRaft controller quorum and controller failure. | Planned |
 | WP-08 | Idempotent producers and transactions; delivery semantics experiments. | Planned |
 | WP-09 | Schema evolution: Avro/Protobuf + Schema Registry, compatibility modes. | Planned |
@@ -355,6 +356,27 @@ WP-26 through WP-31 are appended after the existing plan rather than
 interleaved into it, specifically so that adding them required renumbering
 nothing — every existing WP number, lab number, and file path in this
 repository remains exactly what it was before this document was extended.
+
+**A note on WP-06 and WP-06A.** The work package request that produced
+`lab-05-offset-management-delivery-semantics` specified "WP-06" for offset
+management and delivery semantics — but at the time that request arrived,
+WP-06 in this roadmap was already assigned to replication and broker-failure
+experiments, and had never been implemented. Renumbering WP-06 through WP-31
+to make room (shifting roughly 26 rows plus every cross-reference to them in
+the curriculum-levels section, the curriculum map, and the milestone table)
+would have broken far more than it fixed, for content that hadn't been built
+yet in either case. This roadmap instead applies the same lettered-insertion
+pattern WP-02A already established: **WP-06 is repurposed** for offset
+management and delivery semantics (the newly requested, now-implemented
+content), and the original replication/broker-failure scope is preserved
+verbatim as a new row, **WP-06A**, inserted immediately after it — no
+already-created WP number or lab number changes as a result. Because WP-06A,
+not WP-07, is now the next work package in build order, this document marks
+**WP-06A as Current** rather than literally marking WP-07 as Current — WP-07
+(KRaft controller quorum and controller failure) is unrelated content,
+unaffected by this change, and remains Planned. This deviation from a
+literal "WP-07 → Current" instruction is deliberate and is called out
+explicitly here, and in the PR that made this change, for visibility.
 
 **A note on WP-03 through WP-05's lab numbers.** Earlier drafts of this
 roadmap implied separate `lab-03-java-producer` and `lab-04-java-consumer`
