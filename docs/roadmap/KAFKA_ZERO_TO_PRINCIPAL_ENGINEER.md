@@ -110,8 +110,8 @@ refined as earlier WPs surface new information; it is not a fixed contract.
 
 | WP | Scope | Status |
 |---|---|---|
-| WP-01 | Repository foundation: README, this roadmap, reference repositories, Kafka mental model, contributing guide, `.gitignore`, license. | **This work package.** |
-| WP-02 | Local KRaft environment: Docker Compose cluster, topic/partition/offset inspection, CLI walkthrough. | Planned |
+| WP-01 | Repository foundation: README, this roadmap, reference repositories, Kafka mental model, contributing guide, `.gitignore`, license. | Done |
+| WP-02 | Local KRaft environment: Docker Compose cluster, topic/partition/offset inspection, CLI walkthrough. (`lab-01-first-kafka-cluster`) | **This work package.** |
 | WP-03 | Native Java producer/consumer fundamentals (no Spring). | Planned |
 | WP-04 | Partitioning experiments: good vs. bad keys, hot partitions. | Planned |
 | WP-05 | Consumer groups and rebalancing, including cooperative rebalancing and static membership. | Planned |
