@@ -30,8 +30,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <p>This class uses auto-commit, deliberately, to keep the first consumer
  * in this lab focused on the poll loop itself rather than manual offset
  * management. Read the comments in the poll loop below (and the lab
- * README's "Auto-commit" section) before assuming auto-commit means
- * anything stronger than what it actually does.
+ * README's Experiment 5) before assuming auto-commit means anything
+ * stronger than what it actually does.
  */
 public final class ConsumerApp {
 
@@ -126,19 +126,49 @@ public final class ConsumerApp {
                     // not know or care whether this line succeeded.
                 }
 
-                // With auto-commit enabled, the client periodically commits
-                // the current position on your behalf, on its own
-                // schedule (auto.commit.interval.ms), NOT immediately
-                // after each poll() batch finishes processing. That means:
-                // (a) a crash between "processed" and "the next scheduled
-                // auto-commit" replays this batch on restart, and (b) even
-                // without a crash, auto-commit is not synchronized with
-                // your processing loop's success or failure at all -- it
-                // does not know whether the loop above threw partway
-                // through a batch. "Auto-commit commits after successful
-                // processing" is not an accurate description of what this
-                // does. Manual, deliberate offset commits (tied explicitly
-                // to confirmed processing) are a later-lab topic.
+                // Auto-commit is not an independent background timer that
+                // fires every auto.commit.interval.ms regardless of what
+                // this consumer is doing. Verified against the actual
+                // kafka-clients:4.3.1 source (ConsumerCoordinator, the
+                // classic group-protocol implementation this consumer uses
+                // by default): the interval is only ever checked as a side
+                // effect of THIS THREAD calling poll() -- there is no
+                // separate thread ticking in the background for this
+                // protocol. If this loop stops calling poll(), no further
+                // auto-commit ever happens, full stop. (The newer
+                // group.protocol=consumer implementation does run some of
+                // this on its own background thread -- exact mechanics
+                // differ by protocol and are WP-05's job, not this one.)
+                //
+                // What gets committed, when due, is this consumer's
+                // current POSITION -- how far poll() has advanced for each
+                // assigned partition -- not "whatever this loop has
+                // finished processing." Position advances for an entire
+                // batch as soon as poll() returns it, before this for loop
+                // has looked at a single record in that batch. That one
+                // fact is the source of BOTH auto-commit risks, in
+                // opposite directions:
+                //
+                // (a) DUPLICATE: process a record -> crash before the
+                // position past it is ever committed -> on restart, the
+                // group resumes from the last actual commit, which is
+                // still behind -> this record is fetched and processed
+                // again.
+                //
+                // (b) SKIPPED: poll() returns a batch and position
+                // advances past all of it immediately -> this loop fails
+                // partway through processing that batch (or the process is
+                // killed) -> if an auto-commit had already fired for that
+                // already-advanced position (or fires later, on some
+                // future successful poll()), Kafka's committed offset can
+                // end up ahead of business work this application never
+                // actually finished -- with no error from Kafka's side to
+                // indicate that happened.
+                //
+                // "Auto-commit commits after successful processing" is not
+                // an accurate description of either direction above.
+                // Manual, deliberate offset commits (tied explicitly to
+                // confirmed processing) are a later-lab topic.
             }
         } catch (WakeupException e) {
             if (!shuttingDown.get()) {

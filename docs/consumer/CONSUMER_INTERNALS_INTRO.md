@@ -97,8 +97,17 @@ the Java client's own moving parts.
    `poll()`, regardless of whether your processing loop has actually
    finished with them. The *committed offset* — what the broker's
    `__consumer_offsets` topic remembers for this group — only changes when
-   a commit (automatic or manual) actually happens, on its own schedule.
-   **Never treat these as the same value.**
+   a commit, automatic or manual, actually happens. For automatic commits
+   under the classic group-protocol implementation, that happens as a side
+   effect of *this consumer's own thread calling `poll()`* once the
+   configured interval has elapsed — not from an independent,
+   application-unaware timer that fires on its own regardless of whether
+   this consumer is doing anything (verified against the
+   `kafka-clients:4.3.1` source; see
+   [`ConsumerApp`](../../labs/lab-02-native-java-producer-consumer/src/main/java/com/kafkalab/nativeclient/consumer/ConsumerApp.java)'s
+   comments for the full mechanics and the two opposite-direction risks
+   this creates). **Never treat position and committed offset as the same
+   value.**
 
 ## The four things this document keeps separate
 
