@@ -26,7 +26,7 @@ and
 without modifying either. It does not implement Kafka's idempotent
 producers or transactions, the transactional outbox pattern, or a
 production-grade idempotent-consumer/dedup-table implementation — those
-remain WP-08, WP-12, and WP-15 respectively; see the conceptual doc's
+remain WP-09, WP-12, and WP-13 respectively; see the conceptual doc's
 "Scope note" for exactly why.
 
 ## Prerequisites

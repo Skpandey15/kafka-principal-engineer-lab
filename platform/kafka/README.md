@@ -82,7 +82,7 @@ process is both the thing storing your topic's records and the thing
 deciding "this node is the leader of `orders`-partition-0." Combined mode is
 appropriate for local development and this curriculum's early labs
 specifically *because* it minimizes moving parts while you build the mental
-model; WP-07 introduces a multi-node controller quorum and controller
+model; WP-08 introduces a multi-node controller quorum and controller
 failure, where the broker/controller split starts to matter operationally.
 
 ## Listeners and advertised listeners
@@ -127,7 +127,7 @@ agree on any new metadata — this is one of the specific things a single-node
 lab cannot teach you about production Kafka, and it is why the Production
 Contrast table in the lab explicitly separates "cluster survives *data-plane*
 node loss" from "cluster survives *control-plane* node loss." Real quorum
-tolerance (`2N+1` voters, majority agreement) is the subject of WP-07.
+tolerance (`2N+1` voters, majority agreement) is the subject of WP-08.
 
 ## Cluster ID
 

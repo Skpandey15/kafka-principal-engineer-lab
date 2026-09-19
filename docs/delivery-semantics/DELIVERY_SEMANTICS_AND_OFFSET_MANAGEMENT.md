@@ -13,11 +13,11 @@ This document is about what a **consumer's own poll/process/commit loop**
 can and cannot guarantee. It deliberately does **not** cover:
 
 - Kafka's idempotent producers or transactions (`enable.idempotence`,
-  `transactional.id`, `read_committed`) -- reserved for WP-08.
+  `transactional.id`, `read_committed`) -- reserved for WP-09.
 - The transactional outbox pattern, for coordinating a Kafka publish with
   a database write atomically -- reserved for WP-12.
 - A production-grade idempotent-consumer implementation (durable
-  deduplication tables, retry/DLQ integration) -- reserved for WP-15.
+  deduplication tables, retry/DLQ integration) -- reserved for WP-13.
 
 This lab's idempotent-consumer experiment is real and its result is real,
 but it is intentionally the simplest possible version of the pattern (a
@@ -25,7 +25,7 @@ flat file keyed by `eventId`), so the *shape* of the idea is visible
 without pulling in database transactions, retry topics, or dead-letter
 handling that belong to those later work packages. See "The dual-write
 problem" near the end of this document for exactly where this lab's
-scope ends and WP-12/WP-15's begins.
+scope ends and WP-12/WP-13's begins.
 
 ## Offset fundamentals: three numbers that are not the same number
 
@@ -362,7 +362,7 @@ sufficient.
 
 **This repository deliberately does not claim ordinary offset commits
 alone provide end-to-end exactly-once *business* semantics**, and does
-not claim Kafka's own EOS (reserved for WP-08) closes that gap either.
+not claim Kafka's own EOS (reserved for WP-09) closes that gap either.
 Kafka's exactly-once semantics guarantee things entirely internal to
 Kafka -- what a producer wrote, and what a `read_committed` consumer
 sees. The moment "exactly-once" is asked to mean "the database was
@@ -416,7 +416,7 @@ than this document has room for:
   *effects*; does nothing about the write to that durable record itself
   potentially being the very dual-write problem one level down (which is
   why a real implementation needs the effect and the idempotency marker
-  written in the *same* local database transaction -- see WP-15).
+  written in the *same* local database transaction -- see WP-13).
 - **Transactional outbox** (WP-12): flip the direction entirely -- write
   the *intent* to publish an event into the same local database
   transaction as the business change, and let a separate process (built
@@ -425,7 +425,7 @@ than this document has room for:
   should be published are atomic with each other"; the Kafka publish
   itself is still at-least-once, so a consumer of it still needs its own
   idempotency handling.
-- **Kafka transactions** (WP-08): make a producer's writes across
+- **Kafka transactions** (WP-09): make a producer's writes across
   multiple partitions/topics atomic, and let `read_committed` consumers
   see only committed transactional writes. Solves atomicity *within
   Kafka*, for producers that need to publish to several places as one
@@ -687,7 +687,7 @@ effect. A correct production idempotent consumer closes this by writing
 the marker and the effect in the *same local transaction* against
 whatever datastore the effect itself lives in (a `processed_events`
 table with a `UNIQUE(event_id)` constraint, written in the same
-transaction as the business row it protects) -- which is WP-15's
+transaction as the business row it protects) -- which is WP-13's
 territory, not reproduced here because doing it correctly needs a real
 transactional datastore this lab does not set up.
 

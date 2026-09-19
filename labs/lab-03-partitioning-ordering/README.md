@@ -19,7 +19,7 @@ Engineer depth behind every experiment here lives in
 read it alongside this lab, not instead of it.
 
 This lab does not implement consumer-group rebalance internals
-(WP-05), replication/ISR (a later WP), transactions (WP-08), Kafka
+(WP-05), replication/ISR (WP-07), transactions (WP-09), Kafka
 Streams, Schema Registry, Connect, Spring Kafka, Kubernetes, Cruise
 Control, multi-cluster, deep capacity planning, or security. It reuses
 WP-03's native producer/consumer fundamentals — read

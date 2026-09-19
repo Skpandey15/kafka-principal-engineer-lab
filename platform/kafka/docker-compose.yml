@@ -77,7 +77,7 @@ services:
       # this cluster's metadata quorum has exactly one voter and therefore no
       # tolerance for controller loss — that trade-off is intentional here
       # and is explained in docs/fundamentals/KAFKA_CLUSTER_FUNDAMENTALS.md
-      # and revisited for real in the WP-07 controller-quorum-failure lab.
+      # and revisited for real in the WP-08 controller-quorum-failure lab.
       KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:29093"
 
       # --- Cluster identity -------------------------------------------------

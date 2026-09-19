@@ -232,7 +232,7 @@ One thing worth knowing before you run the producer experiments: this
 client enables **idempotence by default** (a modern `kafka-clients`
 default, not something this lab's code requests) — you'll see
 `Instantiated an idempotent producer.` in the logs of every producer app.
-This lab does not otherwise rely on or explain idempotence (that's WP-08's
+This lab does not otherwise rely on or explain idempotence (that's WP-09's
 job); it's noted here only so the log line doesn't look like an
 unexplained surprise.
 
@@ -748,7 +748,7 @@ nothing to clean up manually for it.
 | No authentication, `PLAINTEXT` only | Authentication and authorization appropriate to the environment |
 | Manually run Java classes, one at a time | A managed application (a service, a Spring Boot app — later WP) |
 | `System.out.println` for observability | Structured logging, metrics, tracing |
-| Auto-commit, default `acks`, no retries tuned | An explicit delivery-semantics and client-resilience strategy (WP-08 and the client-resilience curriculum topic) |
+| Auto-commit, default `acks`, no retries tuned | An explicit delivery-semantics and client-resilience strategy (WP-06 for offset commit/delivery semantics, WP-09 for transactions, and the client-resilience curriculum topic) |
 | A single hard-coded topic, created by hand | Topic governance: naming, ownership, partition/replication policy |
 
 None of the right-hand column is a checklist to copy uncritically — as
