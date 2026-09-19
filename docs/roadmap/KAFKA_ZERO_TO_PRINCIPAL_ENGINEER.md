@@ -74,7 +74,7 @@ looking anything up.
 |---|---|---|---|
 | M0 | Foundation | Explain Kafka's architecture: brokers, topics, partitions, replication, KRaft, and why Kafka exists relative to queues/DBs. | `docs/principal-engineer/` M0 checkpoint + `interview/fundamentals/` (both added once the fundamentals content lands) |
 | M1 | Developer | Implement reliable Java producers and consumers, reason about serialization, and read consumer group state. | `lab-02` through `lab-04` |
-| M2 | Senior Engineer | Design topics, partition keys, retry/DLQ strategy, and schema evolution policy; explain delivery semantics precisely, including exactly what Kafka's own exactly-once semantics do and do not guarantee about your business logic. | `lab-08` through `lab-13`, `lab-16`, `lab-19` |
+| M2 | Senior Engineer | Design topics, partition keys, retry/DLQ strategy, and schema evolution policy; explain delivery semantics precisely, including exactly what Kafka's own exactly-once semantics do and do not guarantee about your business logic. | `lab-05`, `lab-08` through `lab-13`, `lab-16`, `lab-19` |
 | M3 | Staff Engineer | Operate a cluster under failure, benchmark it, evolve schemas safely, and diagnose incidents from metrics and logs alone. | `lab-20` through `lab-24`, `docs/troubleshooting/`, [`PRINCIPAL_ENGINEER_FAILURE_MATRIX.md`](PRINCIPAL_ENGINEER_FAILURE_MATRIX.md) |
 | M4 | Principal Engineer | Design organization-scale event platforms and defend architecture decisions with trade-offs, not opinions — including partition lifecycle, cluster rebalancing, multi-cluster/DR, platform governance, and cost. | `docs/principal-engineer/`, `adrs/`, `system-design/`, the Level 5/6 topics below |
 | M5 | Kafka Deep Dive | Reason about Kafka internals, failure modes, capacity, multi-cluster/multi-region architecture, and source-level behavior. | `docs/principal-engineer/KAFKA_SOURCE_CODE_READING_GUIDE.md`, `interview/principal/` |
@@ -110,34 +110,37 @@ LEVEL 3 — Application & data integration
   Serialization, Avro/Protobuf, Schema Registry, Kafka Connect, CDC,
   Debezium, transactional outbox, idempotent consumer, Kafka Streams,
   Spring Kafka
-  → WP-09 through WP-15
+  → WP-10 through WP-15
 
 LEVEL 4 — Production engineering
   Client resilience, retry/DLQ, observability, performance, security,
   failure engineering, troubleshooting, capacity planning
-  → WP-15 through WP-21, plus the client-resilience topic threaded through
-    WP-03, WP-06, and WP-08 rather than owning a single dedicated WP
+  → WP-13 (retry/DLQ), WP-16 through WP-19, plus the client-resilience
+    topic threaded through WP-03, WP-06, and WP-09 rather than owning a
+    single dedicated WP
 
 LEVEL 5 — Fleet / platform engineering
   Partition lifecycle, replica reassignment, cluster balancing, Cruise
   Control, multi-cluster, disaster recovery, RPO/RTO, Kafka on Kubernetes,
   Strimzi
-  → WP-26 through WP-31 (new in this document — see the work package plan;
-    all currently Unscheduled beyond being named and scoped)
+  → folded entirely into WP-20, the Principal Engineer capstone (see the
+    consolidation note under the work package plan) — no longer a
+    separate WP range under the 20-WP consolidated plan
 
 LEVEL 6 — Principal Engineer
   Platform governance, cost engineering, system design, ADRs, architecture
   reviews, source-code reading, migration strategy, upgrade strategy, SLO
   design, Principal Engineer failure reviews
-  → WP-22 through WP-24, plus WP-29/WP-30 (governance, cost) from Level 5's
-    new WP range
+  → also folded entirely into WP-20
 ```
 
-Level 5 and 6 overlap in practice — governance and cost engineering (Level 6)
-are meaningless without the fleet-operations concepts (Level 5) they're
-applied to, and both ultimately feed the same ADRs and system designs. The
-split above is for navigation, not a claim that Level 6 strictly follows
-Level 5 in every learner's actual path.
+Level 5 and 6 are no longer just related in practice — under the 20-WP
+consolidated plan they are literally the same work package. Governance and
+cost engineering (Level 6) are meaningless without the fleet-operations
+concepts (Level 5) they're applied to, and both ultimately feed the same
+ADRs and system designs, which is exactly why consolidating them into one
+capstone work package (WP-20) reflects how this material is actually built
+and used, not an arbitrary numbering convenience.
 
 ## Curriculum map
 
@@ -159,12 +162,12 @@ one's future WP is expected to cover.
 | 5 | Replication & failure | How does Kafka survive broker loss without losing data? | `docs/replication/` | `lab-08`, `lab-09` |
 | 6 | KRaft | How does the cluster agree on metadata without ZooKeeper? | `docs/kraft/` | `lab-08`, `lab-09` |
 | 7 | Storage internals | Why is Kafka fast? What is a segment, index, and compaction? | `docs/storage/` | `lab-01` (inspection) |
-| 8 | Delivery semantics | What does "exactly-once" really mean, and when does it lie? | `docs/delivery-semantics/` | `lab-10`, `lab-11`, `lab-12` |
+| 8 | Delivery semantics | What does "exactly-once" really mean, and when does it lie? | `docs/delivery-semantics/` | `lab-05` (offset-commit-driven at-most-once/at-least-once fundamentals, plus an introductory idempotent-consumer experiment, WP-06); `lab-10`, `lab-11`, `lab-12` (Kafka-native idempotent producers, transactions, and EOS, built in WP-09) |
 | 9 | Serialization & schema governance | How do you evolve a schema without breaking consumers? (Note: Schema Registry itself is a Confluent-ecosystem concept layered on top of Kafka, not a Kafka broker feature — see the reference-repositories boundary note above.) | `docs/serialization/`, `docs/schema-registry/` | `lab-13` |
 | 10 | Kafka Connect | How do you move data in/out of Kafka without hand-written glue? | `docs/kafka-connect/` | `lab-14` |
 | 11 | CDC + Debezium | How do database changes become an event stream? | `docs/kafka-connect/` | `lab-15` |
 | 12 | Transactional outbox | How do you avoid the dual-write problem? | `docs/patterns/` | `lab-16` |
-| 13 | Idempotent consumer & business exactly-once | Kafka delivery guarantees ≠ business exactly-once processing — where is *your* idempotency boundary? | `docs/patterns/` | Conceptually anchored directly after outbox (row 12); hands-on lab delivered in `lab-19` alongside retry/DLQ (WP-15) |
+| 13 | Idempotent consumer & business exactly-once | Kafka delivery guarantees ≠ business exactly-once processing — where is *your* idempotency boundary? | `docs/patterns/` | Introduced early, at the level of a single `eventId` check against a durable store, in `lab-05` (WP-06); conceptually anchored directly after outbox (row 12) for its full production treatment, with the hands-on lab delivered in `lab-19` alongside retry/DLQ (WP-13) |
 | 14 | Kafka Streams | How do you build stateful stream processing on top of Kafka? | `docs/kafka-streams/` | `lab-17` |
 | 15 | Spring Kafka | How does a production framework map onto the primitives you already know? | `docs/spring-kafka/` | `lab-18` |
 | 16 | Event-driven patterns (broader taxonomy) | Which pattern fits which problem, and when should you avoid Kafka entirely? | `docs/patterns/` | `lab-16`, `lab-19` |
@@ -175,13 +178,13 @@ one's future WP is expected to cover.
 | 21 | Security | How do you secure a cluster without breaking it? | `docs/security/` | `lab-22` |
 | 22 | Failure engineering | What actually happens when you kill a broker, a consumer, or the network? | `docs/failure-recovery/` | `lab-09`, `lab-23`; indexed across every topic area in [`PRINCIPAL_ENGINEER_FAILURE_MATRIX.md`](PRINCIPAL_ENGINEER_FAILURE_MATRIX.md) |
 | 23 | Troubleshooting | Given symptoms and metrics, what is the diagnostic sequence? | `docs/troubleshooting/` | all failure labs |
-| 24 | Partition lifecycle engineering | How do you choose an initial partition count, and what actually happens — to ordering, to consumer concurrency, to replica placement — when you change it later? | `docs/partitioning/` (deep-dive) | WP-26, Unscheduled |
-| 25 | Cluster rebalancing & Cruise Control | Consumer-group rebalancing and cluster data/replica rebalancing are different problems — why doesn't adding a broker automatically balance a cluster? | `docs/replication/` or a future `docs/cluster-operations/` | WP-27, Unscheduled |
-| 26 | Multi-cluster & disaster recovery | Active/passive vs. active/active, RPO/RTO, producer/consumer failover — architecture first, product choice second | A future `docs/multi-cluster/` | WP-28, Unscheduled |
-| 27 | Kafka on Kubernetes / Strimzi | Just because Kafka *can* run on Kubernetes, should this organization run it there? | A future `docs/kubernetes/` | WP-31, Unscheduled — explicitly not introduced into the current implementation |
-| 28 | Platform governance | Topic/schema/security governance, quotas, SLOs — Kafka as an enterprise platform, not just a broker | A future `docs/governance/` | WP-29, Unscheduled |
-| 29 | Cost engineering | Event rate × size × retention × replication, plus network/cross-AZ/DR duplication — with assumptions always explicit | `docs/performance/` (extended) | WP-30, Unscheduled |
-| 30 | System design | How do you design a real platform end to end, forced through partition key, replication, semantics, schema, retention, retry/DLQ, ordering, scaling, DR, security, and cost decisions together? | `system-design/` | `lab-25` |
+| 24 | Partition lifecycle engineering | How do you choose an initial partition count, and what actually happens — to ordering, to consumer concurrency, to replica placement — when you change it later? | `docs/partitioning/` (deep-dive) | Folded into WP-20 (Principal Engineer capstone); Planned |
+| 25 | Cluster rebalancing & Cruise Control | Consumer-group rebalancing and cluster data/replica rebalancing are different problems — why doesn't adding a broker automatically balance a cluster? | `docs/replication/` or a future `docs/cluster-operations/` | Folded into WP-20; Planned |
+| 26 | Multi-cluster & disaster recovery | Active/passive vs. active/active, RPO/RTO, producer/consumer failover — architecture first, product choice second | A future `docs/multi-cluster/` | Folded into WP-20; Planned |
+| 27 | Kafka on Kubernetes / Strimzi | Just because Kafka *can* run on Kubernetes, should this organization run it there? | A future `docs/kubernetes/` | Folded into WP-20; Planned — explicitly not introduced into the current implementation |
+| 28 | Platform governance | Topic/schema/security governance, quotas, SLOs — Kafka as an enterprise platform, not just a broker | A future `docs/governance/` | Folded into WP-20; Planned |
+| 29 | Cost engineering | Event rate × size × retention × replication, plus network/cross-AZ/DR duplication — with assumptions always explicit | `docs/performance/` (extended) | Folded into WP-20; Planned |
+| 30 | System design | How do you design a real platform end to end, forced through partition key, replication, semantics, schema, retention, retry/DLQ, ordering, scaling, DR, security, and cost decisions together? | `system-design/` | `system-design/` (WP-20) |
 | 31 | Principal Engineer decisions | Why this choice and not that one? | `docs/principal-engineer/`, `adrs/` | all — see the Principal Engineer decision lens below |
 | 32 | Interview preparation | Can you reason under pressure, out loud, from first principles? | `interview/` | — |
 | 33 | Source-code reading | Where in `apache/kafka` does this behavior actually live? | `docs/principal-engineer/KAFKA_SOURCE_CODE_READING_GUIDE.md` | — |
@@ -236,9 +239,10 @@ What would make us change this decision?
 This lens is deliberately generic — it is meant to be applied to a specific
 topic (a partition-count choice, a DR architecture, a security model), not
 answered in the abstract. `docs/principal-engineer/KAFKA_ARCHITECTURE_DECISION_FRAMEWORK.md`
-(planned for WP-24) will apply it explicitly to the named decision points
-listed under WP-24 below; until then, use it directly when working through
-an ADR or a system-design exercise.
+(planned for WP-20, the Principal Engineer capstone) will apply it
+explicitly to the named decision points listed under WP-20 above; until
+then, use it directly when working through an ADR or a system-design
+exercise.
 
 ## Source-code reading track
 
@@ -296,65 +300,98 @@ subsystem and, ideally, the actual method.
 
 ## Work package plan
 
-The repository is built incrementally. Each work package (WP) is a reviewable unit
-of work — never a single giant commit. This list is the current plan and will be
-refined as earlier WPs surface new information; it is not a fixed contract.
+The repository is built incrementally, as exactly **20 work packages**. Each
+work package (WP) is a reviewable unit of work — never a single giant commit
+— and each is scoped to represent a meaningful, Principal-Engineer-level
+engineering capability rather than a narrow feature slice. This list is the
+current plan and will be refined as earlier WPs surface new information; it
+is not a fixed contract.
 
 | WP | Scope | Status |
 |---|---|---|
-| WP-01 | Repository foundation: README, this roadmap, reference repositories, Kafka mental model, contributing guide, `.gitignore`, license. | Done |
-| WP-02 | Local KRaft environment: Docker Compose cluster, topic/partition/offset inspection, CLI walkthrough. (`lab-01-first-kafka-cluster`) | Done |
-| WP-02A | Curriculum, reference-architecture, and Principal Engineer learning enhancement (this document, the reference-repository matrix, and the failure matrix). No implementation. | Done |
-| WP-03 | Native Java producer/consumer fundamentals (no Spring). (`lab-02-native-java-producer-consumer`) | Done |
-| WP-04 | Partitioning experiments: good vs. bad keys, hot partitions. (`lab-03-partitioning-ordering`) | Done |
-| WP-05 | Consumer groups and rebalancing, including cooperative rebalancing and static membership. (`lab-04-consumer-groups-rebalancing`) | Done |
-| WP-06 | Replication and broker failure experiments; ISR and `min.insync.replicas`. | **This work package.** |
-| WP-07 | KRaft controller quorum and controller failure. | Planned |
-| WP-08 | Idempotent producers and transactions; delivery semantics experiments. | Planned |
-| WP-09 | Schema evolution: Avro/Protobuf + Schema Registry, compatibility modes. | Planned |
-| WP-10 | Kafka Connect pipeline (source + sink). (`lab-14-kafka-connect`) | Planned |
-| WP-11 | Debezium CDC pipeline against PostgreSQL. (`lab-15-debezium-cdc`) | Planned |
-| WP-12 | Transactional outbox pattern, built directly on the CDC pipeline from WP-11. (`lab-16-outbox`) | Planned |
-| WP-13 | Kafka Streams applications (DSL + Processor API, joins, windows, state stores, `TopologyTestDriver`, failure and state-restoration behavior). (`lab-17-kafka-streams`) | Planned |
-| WP-14 | Spring Kafka in production style: listener containers, retry topics, DLQ, transactions. (`lab-18-spring-kafka`) | Planned |
-| WP-15 | Retry/DLQ patterns and the idempotent-consumer/deduplication topic (curriculum-map row 13): idempotency keys, processed-event tables, unique constraints, and the crash scenarios that make them necessary. (`lab-19-retry-dlq`) | Planned |
-| WP-16 | Observability stack: JMX → Prometheus → Grafana, key dashboards. (`lab-20-observability`) | Planned |
-| WP-17 | Performance benchmarking harness and documented results. (`lab-21-performance`) | Planned |
-| WP-18 | Security: TLS, SASL/SCRAM, ACLs (local-development-only patterns clearly marked). (`lab-22-security`) | Planned |
-| WP-19 | Failure-injection lab suite (broker kill, network partition, slow consumer, disk pressure) — implements the applicable rows of [`PRINCIPAL_ENGINEER_FAILURE_MATRIX.md`](PRINCIPAL_ENGINEER_FAILURE_MATRIX.md). (`lab-23-failure-injection`) | Planned |
-| WP-20 | Capacity planning workbook with worked examples. (`lab-24-capacity-planning`) | Planned |
-| WP-21 | Production simulation lab combining prior labs into one running system. (`lab-25-production-simulation`) | Planned |
-| WP-22 | System design labs: e-commerce, payments, fraud detection, notifications, clickstream, inventory, CDC/data-integration, and high-volume/booking-style demand spikes. (`system-design/`) | Planned |
-| WP-23 | ADR set (ADR-001 through ADR-018), written only after the supporting lab/design evidence exists. (`adrs/`) | Planned |
-| WP-24 | Principal Engineer decision framework (`docs/principal-engineer/KAFKA_ARCHITECTURE_DECISION_FRAMEWORK.md`, applying the decision lens above), source-code reading guide, interview question banks, milestone assessments. | Planned |
-| WP-25+ | CI (build, unit tests, integration tests, lint, doc-link checks), introduced incrementally. | Planned |
-| WP-26 | Partition lifecycle engineering: growing partition count, key-to-partition remapping implications, what does and doesn't move when you reassign replicas. Lab number to be assigned when scheduled. | Unscheduled |
-| WP-27 | Cluster rebalancing & Cruise Control: broker addition/removal, leader/replica/disk/network skew, rack awareness, optimization goals. Lab number to be assigned when scheduled. | Unscheduled |
-| WP-28 | Multi-cluster architecture and disaster recovery: active/passive vs. active/active, RPO/RTO, producer/consumer failover, schema availability during failover, testing DR rather than only documenting it. Lab number to be assigned when scheduled. | Unscheduled |
-| WP-29 | Kafka platform governance: topic/schema/security governance, quotas, noisy-neighbor controls, SLOs, change/upgrade management. | Unscheduled |
-| WP-30 | Cost engineering: worked capacity/cost models with explicit assumptions (event rate, size, retention, replication, cross-AZ/region traffic, DR duplication). | Unscheduled |
-| WP-31 | Kafka on Kubernetes via Strimzi: KRaft on Kubernetes, `KafkaNodePool`-era architecture, rolling upgrades, and the "should we" trade-off discussion, not just the "how." Explicitly deferred — no Kubernetes in the current implementation. | Unscheduled |
+| WP-01 | Kafka mental model & fundamentals: repository foundation (README, this roadmap, reference repositories, contributing guide, `.gitignore`, license), the Kafka mental model, and core concepts — brokers, topics, partitions, records, offsets, producers, consumers. | Done |
+| WP-02 | KRaft & local Kafka cluster: KRaft architecture, controllers, brokers, Docker Compose cluster startup, topic/partition/offset inspection, CLI operations. (`lab-01-first-kafka-cluster`) | Done |
+| WP-03 | Java producer & consumer: native Kafka Java client (no Spring), producer/consumer lifecycle, serialization, polling. (`lab-02-native-java-producer-consumer`) | Done |
+| WP-04 | Partitioning & ordering: keys, partition assignment, ordering scope, partition skew, hot partitions, the parallelism ceiling. (`lab-03-partitioning-ordering`) | Done |
+| WP-05 | Consumer groups & rebalancing: partition assignment, consumer membership, rebalancing, cooperative/sticky behavior, static membership. (`lab-04-consumer-groups-rebalancing`) | Done |
+| WP-06 | Offset management & delivery semantics: consumer position vs. committed offset, `commitSync`/`commitAsync`, auto-commit vs. manual commit, at-most-once, at-least-once, an introductory idempotent-consumer check, batch-commit boundaries, per-partition offset tracking, and the rebalance/commit-strategy interaction. Deterministic crash injection throughout, never a random process kill. (`lab-05-offset-management-delivery-semantics`) | Current |
+| WP-07 | Replication, ISR & broker failure: replication factor, leaders/followers, ISR, leader election, `acks`, `min.insync.replicas`, broker failure. Lab number to be assigned when scheduled. | Next |
+| WP-08 | KRaft controller quorum & failure: controller quorum, metadata quorum, controller failure, leader election, quorum behavior. Lab number to be assigned when scheduled. | Planned |
+| WP-09 | Transactions & exactly-once semantics: Kafka transactions, producer idempotence, the transactional producer, `read_committed`, and precisely what Kafka's own EOS does and does not guarantee versus true end-to-end business exactly-once (the distinction WP-06 already establishes for offset commits alone). | Planned |
+| WP-10 | Schema evolution: Avro/Protobuf/JSON Schema, compatibility modes, Schema Registry, backward/forward/full compatibility. (`lab-13`) | Planned |
+| WP-11 | Kafka Connect & CDC: Kafka Connect architecture (worker/task/offset model), source/sink connectors, change data capture, Debezium, database → Kafka. Connect fundamentals are sequenced before Debezium-specific CDC within this same work package. (`lab-14-kafka-connect`, `lab-15-debezium-cdc`) | Planned |
+| WP-12 | Transactional outbox: the dual-write problem, the outbox pattern, CDC-based publishing (built directly on WP-11's CDC pipeline), reliability guarantees. (`lab-16-outbox`) | Planned |
+| WP-13 | Retry, DLQ & idempotency: retry strategies, poison messages, dead-letter queues, backoff, and the idempotent-consumer/deduplication topic (curriculum-map row 13) in full production depth — idempotency keys, processed-event tables, unique constraints, and the crash scenarios that make them necessary, building on WP-06's introductory version. (`lab-19-retry-dlq`) | Planned |
+| WP-14 | Kafka Streams: stream processing, state stores, joins, windows, `TopologyTestDriver`, exactly-once processing. (`lab-17-kafka-streams`) | Planned |
+| WP-15 | Spring Kafka: listener containers, producer/consumer configuration, error handling, retries, transactions, in production style. (`lab-18-spring-kafka`) | Planned |
+| WP-16 | Kafka observability & troubleshooting: consumer lag, partition throughput, broker metrics, JMX → Prometheus → Grafana, production dashboards, hot-partition and lag diagnosis, the operational diagnostic sequence. (`lab-20-observability`) | Planned |
+| WP-17 | Performance & capacity engineering: throughput, latency, batching, compression, producer/consumer tuning, partition sizing, and capacity planning from a workload description — a benchmarking harness plus a worked capacity workbook, so tuning and sizing are taught together rather than as separate tracks. (`lab-21-performance`) | Planned |
+| WP-18 | Kafka security: TLS, SASL/SCRAM, ACLs, authentication, authorization, secrets, production security architecture (local-development-only shortcuts clearly marked). (`lab-22-security`) | Planned |
+| WP-19 | Failure engineering & production simulation: broker failures, consumer failures, network issues, rebalances, lag spikes, partition skew, disk pressure, recovery experiments, and a production-simulation lab combining prior labs into one running system — implements the applicable rows of [`PRINCIPAL_ENGINEER_FAILURE_MATRIX.md`](PRINCIPAL_ENGINEER_FAILURE_MATRIX.md). (`lab-23-failure-injection`, `lab-25-production-simulation`) | Planned |
+| WP-20 | Multi-cluster, DR & Principal Engineer capstone: multi-cluster architecture, MirrorMaker 2, disaster recovery, RPO/RTO, active-active vs. active-passive, partition lifecycle engineering, cluster rebalancing and Cruise Control, platform governance, cost engineering, Kafka on Kubernetes/Strimzi, system design labs, the ADR set, the Principal Engineer architecture-decision framework, the source-code reading guide, interview question banks, and milestone assessments — architecture decisions and trade-offs across capacity, security, and reliability, culminating in final production-grade system design. This is the consolidation of every previously-separate Level 5/6 capstone topic into one substantial, final work package. (`system-design/`, `adrs/`) | Planned |
 
 WPs are not strictly sequential milestones — several can proceed once their
 prerequisites exist — but the order above reflects genuine dependencies: for
-example, transactions (WP-08) before the outbox pattern, and Kafka Connect
-(WP-10) before Debezium CDC (WP-11) before the transactional outbox (WP-12),
-since this repository's outbox lab is built directly on top of the CDC pipeline
-rather than as a standalone pattern. Lab numbers therefore run
-`lab-14-kafka-connect` → `lab-15-debezium-cdc` → `lab-16-outbox` consecutively,
-even though the outbox *pattern* is conceptually closer to the event-driven
-patterns covered later — the numbering follows build dependency order, not
-topic difficulty. The idempotent-consumer topic (curriculum-map row 13)
-follows the same conceptual chain — it is the direct continuation of "what do
-we do with reliably-published events once a consumer has to act on them
-exactly once" — but its hands-on lab is delivered later, in WP-15, because a
-realistic treatment benefits from the retry/DLQ mechanics WP-15 also covers;
-the roadmap says so explicitly here rather than leaving the gap unexplained.
+example, transactions (WP-09) before the outbox pattern (WP-12), and Kafka
+Connect fundamentals before Debezium-specific CDC within WP-11, since this
+repository's outbox lab is built directly on top of the CDC pipeline rather
+than as a standalone pattern. The idempotent-consumer topic (curriculum-map
+row 13) follows the same conceptual chain — introduced early, in WP-06, at
+the level of a single durable `eventId` check, then given its full
+production treatment in WP-13 alongside retry/DLQ, because a realistic
+treatment benefits from the retry/DLQ mechanics WP-13 also covers.
 
-WP-26 through WP-31 are appended after the existing plan rather than
-interleaved into it, specifically so that adding them required renumbering
-nothing — every existing WP number, lab number, and file path in this
-repository remains exactly what it was before this document was extended.
+**Consolidation note: exactly 20 work packages.** This roadmap was
+originally planned as 31+ separate work packages (plus a lettered insertion,
+WP-02A) before any of WP-07 onward were built. To keep every WP a
+substantial, Principal-Engineer-level capability rather than a small feature
+slice, and to avoid an ever-growing tail of thin WPs, this document
+consolidates that original plan into exactly 20 work packages. **No useful
+learning material was deleted** — every topic the original plan named still
+has a deliberate place, either as its own WP or grouped into a related one.
+The full mapping from the original numbering to this one:
+
+| Original plan | Now |
+|---|---|
+| WP-01, WP-02 | Unchanged (WP-01, WP-02) |
+| WP-02A (this document, the reference-repository matrix, the failure matrix — no implementation) | Folded into the Foundation phase's documentation set (WP-01/WP-02); it produced documentation, not a lab, so it does not need its own numbered slot in a 20-WP plan |
+| WP-03, WP-04, WP-05 | Unchanged (WP-03, WP-04, WP-05) |
+| WP-06 (offset management & delivery semantics) | Unchanged number — **this was always the intent**; see the historical note below on how this number was contested and resolved |
+| The original WP-06 (replication and broker failure, never implemented) | **WP-07** |
+| Original WP-07 (KRaft controller quorum) | **WP-08** |
+| Original WP-08 (idempotent producers and transactions) | **WP-09** |
+| Original WP-09 (schema evolution) | **WP-10** |
+| Original WP-10 (Kafka Connect) + WP-11 (Debezium CDC) | Merged into **WP-11** (Kafka Connect & CDC) |
+| Original WP-12 (transactional outbox) | Unchanged (WP-12) |
+| Original WP-13 (Kafka Streams) | **WP-14** |
+| Original WP-14 (Spring Kafka) | **WP-15** |
+| Original WP-15 (retry/DLQ + idempotent consumer) | **WP-13** (moved earlier, ahead of Streams/Spring Kafka) |
+| Original WP-16 (observability) | Unchanged number, **WP-16**, now explicitly merged with troubleshooting (curriculum-map row 23, which never had its own dedicated WP) |
+| Original WP-17 (performance benchmarking) + WP-20 (capacity planning) | Merged into **WP-17** (Performance & Capacity Engineering) |
+| Original WP-18 (security) | Unchanged (WP-18) |
+| Original WP-19 (failure-injection suite) + WP-21 (production simulation) | Merged into **WP-19** (Failure Engineering & Production Simulation) |
+| Original WP-22 (system design), WP-23 (ADRs), WP-24 (PE decision framework, source-code reading, interview banks, milestone assessments), WP-26 (partition lifecycle), WP-27 (cluster rebalancing/Cruise Control), WP-28 (multi-cluster/DR), WP-29 (platform governance), WP-30 (cost engineering), WP-31 (Kubernetes/Strimzi) | All merged into **WP-20**, the Principal Engineer capstone |
+| Original WP-25+ (CI: build, unit tests, integration tests, lint, doc-link checks) | Not a curriculum WP in the same sense as the others — it is ongoing engineering practice threaded through every WP's own validation (`./gradlew build`/`test` per lab, plus regression checks on prior labs), not a separate numbered slot in this 20-WP plan |
+
+This mapping is the authoritative reference for any historical PR, commit
+message, or discussion that cites an old WP number for content at or after
+the original WP-06 — treat this table as the translation key.
+
+**A note on WP-06's number itself.** A later work-package request explicitly
+asked for "WP-06 — Offset Management & Delivery Semantics" at a time when
+this roadmap still had WP-06 assigned to the never-implemented replication
+content above. That request was fulfilled by a prior revision of this
+document via a temporary lettered insertion (`WP-06A`, holding the
+displaced replication scope) rather than a full renumbering — a reasonable
+choice at the time, given the cost of renumbering WP-06 through WP-31 for
+content that didn't exist yet in either case. This document now completes
+that resolution properly: **WP-06 is confirmed as Offset Management &
+Delivery Semantics** (no longer a temporary repurposing), the displaced
+replication content becomes a permanent, non-lettered **WP-07**, and the
+`WP-06A` label is retired entirely — it no longer appears anywhere in this
+roadmap. WP-06's own implementation, experiments, and tests
+(`lab-05-offset-management-delivery-semantics`) are unaffected by this
+renumbering; only this document's bookkeeping around it changed.
 
 **A note on WP-03 through WP-05's lab numbers.** Earlier drafts of this
 roadmap implied separate `lab-03-java-producer` and `lab-04-java-consumer`

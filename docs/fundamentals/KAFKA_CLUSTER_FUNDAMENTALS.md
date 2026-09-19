@@ -72,7 +72,7 @@ for.
 
 This document does not explain Raft's leader-election or log-replication
 algorithm in detail — that belongs to `docs/kraft/`, once a multi-node
-controller quorum exists to make the failure scenarios concrete (WP-07).
+controller quorum exists to make the failure scenarios concrete (WP-08).
 What matters here is the shape of the idea: metadata is a log, the same way
 topic data is a log, and a quorum of nodes agrees on that log the same way
 Kafka's replication protocol gets brokers to agree on a partition's data.

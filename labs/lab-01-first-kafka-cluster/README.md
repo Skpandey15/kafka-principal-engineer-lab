@@ -1118,7 +1118,7 @@ the producer side strong enough that "acknowledged" actually means
 leader," and — separately — enough controller voters that the *cluster's
 metadata itself* survives losing a node, not just its topic data. This lab
 demonstrates none of these; it demonstrates their absence, deliberately, so
-the multi-broker replication lab (WP-06) has something concrete to add.
+the multi-broker replication lab (WP-07) has something concrete to add.
 
 **15. If the business says "we cannot lose an acknowledged payment event,"
 what additional Kafka concepts must we study before promising that
@@ -1137,5 +1137,6 @@ conflated. None of these exist in this lab's single-broker, RF=1
 environment — which is exactly why this question belongs at the end of
 Lab 01 rather than being answerable from it: it's a map of everything
 between here and being able to make that promise honestly, covered across
-WP-06 (replication), WP-08 (transactions and delivery semantics), and the
-Principal Engineer decision framework.
+WP-06 (offset management and delivery semantics — the consumer-side
+processing-vs-commit ordering above, now implemented), WP-07 (replication),
+WP-09 (transactions), and the Principal Engineer capstone (WP-20).

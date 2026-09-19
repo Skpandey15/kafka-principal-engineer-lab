@@ -116,9 +116,9 @@ logical key differently at the byte level — a different `String` encoding,
 a different number formatting, a schema change that alters field order or
 representation — can hash to different partitions for what a human would
 call the same key. This is exactly why changing how a key is serialized
-(including future schema changes, once WP-09 introduces Schema Registry)
+(including future schema changes, once WP-10 introduces Schema Registry)
 has partitioning consequences, not just a data-format concern. This
-document does not go further into schema mechanics — that's WP-09's job —
+document does not go further into schema mechanics — that's WP-10's job —
 but the causal link (serialization changes key bytes changes hash changes
 partition) is established here because it follows directly from the
 `partitionForKey` signature above.
@@ -128,7 +128,7 @@ partition) is established here because it follows directly from the
 > Kafka provides ordering **within a partition**, subject to the relevant
 > producer/delivery semantics (in-order delivery from a single producer to
 > a single partition; more nuanced under retries without idempotence,
-> which is WP-08's topic).
+> which is WP-09's topic).
 
 Do not write, or believe, "Kafka guarantees message ordering" as a
 complete sentence — it is not one.

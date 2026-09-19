@@ -94,9 +94,10 @@ This introduction does not explain: how `batch.size`/`linger.ms` decide
 `buffer.memory` back-pressure looks like when the accumulator fills up,
 how the `Partitioner`'s default implementation actually picks a partition,
 or how idempotence/transactions change what "the broker responds" means.
-Those all belong to later work packages (WP-04's partitioning lab, and the
-delivery-semantics/transactions work in WP-08) — this document exists only
-to establish the pipeline's shape.
+Those all belong to later work packages (WP-04's partitioning lab, the
+offset-management/delivery-semantics fundamentals in WP-06, and the
+Kafka-transactions work in WP-09) — this document exists only to establish
+the pipeline's shape.
 
 ## Source-reading exercise
 
