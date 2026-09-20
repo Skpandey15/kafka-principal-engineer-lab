@@ -220,6 +220,16 @@ stayed on broker 3 — restart and leadership return are two different
 events. See the conceptual doc for the `auto.leader.rebalance.enable`
 explanation.
 
+`docker start` here is an **ordinary restart** — the same container and
+named volume, so broker 2's storage was retained and it only had to
+catch up ~20 seconds of missed replication. The automated test suite's
+`revivedBrokerRejoinsIsrAfterCatchingUp` exercises a *different*,
+storage-replacement-style recovery instead (fresh storage under the
+same `node.id`, full re-replication) — see
+`ThreeBrokerKafkaCluster`'s Javadoc and the conceptual doc's "Two
+different recoveries, worth telling apart" for why these are not the
+same event, even though both end with the broker back in ISR.
+
 ### Experiment 6 — Replication factor
 
 ```bash

@@ -178,6 +178,27 @@ and conflating them is a common mistake:
    recovery with leadership "unbalanced" relative to the original
    assignment, and that is expected, not a bug.
 
+**Two different recoveries, worth telling apart.** The `docker start`
+above is an **ordinary restart**: the same container, the same named
+Docker volume, so broker 2's log directory — and everything KRaft had
+already recorded about that storage — came back intact. Broker 2 only
+had to catch up on the roughly 20 seconds of replication it missed.
+This lab's automated test suite additionally exercises a *different*
+recovery: `ThreeBrokerKafkaCluster.reviveBroker` removes the old
+container and starts a brand-new one under the same `node.id`, backed
+by empty, never-before-formatted storage — closer to a real
+broker/storage-replacement scenario (the disk was lost and swapped, not
+merely offline for 20 seconds) than to the restart above. `node.id`
+alone does not make these the same event: the storage itself carries
+its own persistent identity in modern KRaft, and a broker rejoining on
+fresh storage has to be *fully* re-replicated for every partition it
+holds, not just caught up on a short gap. See
+`ThreeBrokerKafkaCluster`'s Javadoc for the full account, including
+where this document stops short of asserting KRaft's exact wire-level
+mechanics for tracking per-directory storage identity (not
+independently re-verified against the pinned `4.3.1` build in this
+lab) and instead verifies only the observable, practical consequence.
+
 ## Replication factor — real proof RF=1 has zero fault tolerance
 
 **RF=1** (`rf1-demo`, sole replica on broker 3): produced successfully,
@@ -490,7 +511,8 @@ captured evidence.
 | RF=3, one broker fails | Partition continues normally | Real (broker-failure experiment) |
 | ISR ≥ `min.insync.replicas` | `acks=all` write succeeds | Real, at exactly the threshold (ISR=2, minISR=2) |
 | ISR < `min.insync.replicas` | `acks=all` write rejected | Real (`TimeoutException`, plus a clean `NotEnoughReplicasException`/`TimeoutException` in the automated RF=2 test) |
-| Broker rejoins | Replica catches up before ISR re-entry | Real (broker-recovery experiment; also the automated `revivedBrokerRejoinsIsrAfterCatchingUp` test) |
+| Broker rejoins after an ordinary restart (storage retained) | Replica catches up on only what it missed, then re-enters ISR | Real (`docker start`, broker-recovery experiment) |
+| Broker rejoins on fresh storage (a replacement-style recovery) | Replica is fully re-replicated from scratch before re-entering ISR | Real (automated `revivedBrokerRejoinsIsrAfterCatchingUp` test, via `ThreeBrokerKafkaCluster.reviveBroker`) |
 | All ISR members down, unclean election disabled | Partition stays offline, no data loss risked | Documented via real config verification, not live-forced |
 
 ## Observability

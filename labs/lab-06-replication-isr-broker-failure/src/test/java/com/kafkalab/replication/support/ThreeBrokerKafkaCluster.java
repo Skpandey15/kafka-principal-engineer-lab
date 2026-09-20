@@ -33,20 +33,52 @@ import java.util.stream.Collectors;
  * so the advertised-listener value can be computed before {@code start()}
  * is ever called.
  *
- * <h2>What "broker recovery" means in these tests, precisely</h2>
- * {@link #killBroker} stops and removes that broker's container outright
- * -- Testcontainers does not support restarting the exact same container
- * with new configuration, and this class does not attach a persistent
- * volume to any broker's log directory. {@link #reviveBroker} therefore
- * starts a brand-new container with the SAME {@code node.id} and network
- * alias, backed by empty, freshly-formatted storage. This is not a
- * simplification of what "broker recovery" means -- it is a faithful
- * simulation of the real-world case where a broker's disk is lost and
- * replaced (a fresh log directory, same identity): Kafka's own replication
- * protocol treats both cases identically, since a broker's identity is its
- * {@code node.id}, not its container ID or its disk contents. The
- * recovered broker must fetch every record it's a replica for from the
- * current leader, exactly as it would after a real disk replacement.
+ * <h2>What "broker recovery" means in these tests, precisely -- and what it
+ * does NOT mean</h2>
+ * There are two different things "a broker comes back" can refer to, and
+ * this class deliberately implements only one of them:
+ *
+ * <ol>
+ *   <li><b>Ordinary restart (NOT what this class does).</b> The same
+ *       broker process stops and starts again with its original
+ *       configuration AND its original log directory intact -- the same
+ *       on-disk segments, the same directory identity KRaft already
+ *       recorded for that storage. Kafka only needs that broker to catch
+ *       up on whatever it missed while it was down. This is what
+ *       {@code platform/kafka-cluster/docker-compose.yml}'s manual
+ *       {@code docker start} experiment in the lab README exercises --
+ *       {@code docker start} reuses the same container and the same named
+ *       volume, so the broker's storage is genuinely retained.</li>
+ *   <li><b>What {@link #reviveBroker} actually does.</b> {@link #killBroker}
+ *       stops and removes that broker's container outright -- Testcontainers
+ *       does not support restarting the exact same container with new
+ *       configuration, and this class does not attach a persistent volume
+ *       to any broker's log directory. {@link #reviveBroker} therefore
+ *       starts a brand-new container, reusing the same configured
+ *       {@code node.id} and network alias, but backed by empty,
+ *       never-before-formatted storage. This is closer to a real
+ *       broker/storage-replacement recovery -- disk lost and swapped, same
+ *       broker slot reconfigured on the new disk -- than to the ordinary
+ *       restart above.</li>
+ * </ol>
+ *
+ * <p><b>Do not read this as "a broker's identity is just its {@code node.id},
+ * independent of its storage."</b> That overstates it. {@code node.id} is
+ * the broker's assigned identity within the cluster's membership and
+ * partition assignments -- it is what lets a new container "become" the
+ * same logical broker again. But the storage backing that broker carries
+ * its own persistent identity too: modern KRaft tracks log-directory
+ * identity as part of its metadata (introduced for JBOD-style per-directory
+ * awareness), and this repository has not independently re-verified the
+ * exact wire-level mechanics of that tracking against the pinned
+ * {@code apache/kafka:4.3.1} build. What this class's tests DO verify
+ * directly is the observable, practical consequence: a broker rejoining
+ * under its old {@code node.id} but with fresh, empty storage is not
+ * "instantly caught up" the way a retained-storage restart would be -- it
+ * has to be fully re-replicated for every partition it's assigned, from
+ * scratch, before {@link #reviveBroker}'s callers should expect it back in
+ * ISR. {@code revivedBrokerRejoinsIsrAfterCatchingUp} asserts exactly that
+ * bounded catch-up, not an instant rejoin.
  */
 public final class ThreeBrokerKafkaCluster implements AutoCloseable {
 
@@ -101,6 +133,12 @@ public final class ThreeBrokerKafkaCluster implements AutoCloseable {
         }
     }
 
+    /**
+     * Starts a fresh container under the same {@code node.id}, backed by
+     * empty storage -- a storage-replacement-style recovery, not an
+     * ordinary restart. See the class Javadoc's "What 'broker recovery'
+     * means in these tests" for the full distinction.
+     */
     public void reviveBroker(int nodeId) {
         GenericContainer<?> broker = newBrokerContainer(nodeId);
         brokers.put(nodeId, broker);
