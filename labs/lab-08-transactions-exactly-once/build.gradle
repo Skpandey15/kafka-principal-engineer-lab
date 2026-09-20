@@ -1,0 +1,145 @@
+// Lab 08 — Transactions & Exactly-Once Semantics (WP-09).
+//
+// Same dependency set and versions as prior labs -- a separate,
+// self-contained Gradle project, per this repository's established
+// one-project-per-lab convention (see lab-03's README, "Why a separate
+// project").
+
+import java.time.Duration
+
+plugins {
+    id 'java'
+}
+
+group = 'com.kafkalab'
+version = '0.1.0'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'org.apache.kafka:kafka-clients:4.3.1'
+
+    implementation 'org.slf4j:slf4j-api:2.0.19'
+    runtimeOnly 'org.slf4j:slf4j-simple:2.0.19'
+
+    testImplementation 'org.junit.jupiter:junit-jupiter:6.1.3'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+
+    testImplementation 'org.testcontainers:testcontainers:2.0.5'
+    testImplementation 'org.testcontainers:testcontainers-junit-jupiter:2.0.5'
+}
+
+test {
+    useJUnitPlatform()
+    timeout = Duration.ofMinutes(10)
+    testLogging {
+        events = ['passed', 'skipped', 'failed']
+        exceptionFormat = 'full'
+    }
+}
+
+// --- Runnable experiments -------------------------------------------------
+// All default to the reused WP-07 3-broker cluster (platform/kafka-cluster/),
+// whose internal topics -- including __transaction_state -- are already
+// configured with replication factor 3 / min.insync.replicas 2. See the lab
+// README, "Environment," for why this WP does not stand up a new cluster.
+
+tasks.register('runDuplicateRiskDemo', JavaExec) {
+    group = 'lab experiments'
+    description = 'Experiment 1: non-idempotent producer, app-level retry-after-timeout, real duplicate risk (Section 2).'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.transactions.producer.DuplicateRiskProducerApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: 'localhost:9093,localhost:9094,localhost:9095'
+    systemProperty 'topic', findProperty('topic') ?: 'txn-lab-duplicate-risk'
+    systemProperty 'eventId', findProperty('eventId') ?: 'Order-101'
+    systemProperty 'requestTimeoutMs', findProperty('requestTimeoutMs') ?: '3000'
+}
+
+tasks.register('runIdempotentProducer', JavaExec) {
+    group = 'lab experiments'
+    description = 'Experiment 2: idempotent producer burst -- inspect PID/epoch/sequence afterward with kafka-transactions.sh describe-producers (Sections 3-4).'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.transactions.producer.IdempotentProducerApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: 'localhost:9093,localhost:9094,localhost:9095'
+    systemProperty 'topic', findProperty('topic') ?: 'txn-lab-idempotent'
+    systemProperty 'count', findProperty('count') ?: '10'
+    systemProperty 'idempotence', findProperty('idempotence') ?: 'true'
+}
+
+tasks.register('runTransactionalProducer', JavaExec) {
+    group = 'lab experiments'
+    description = 'Experiments 3-4: transactional producer -- commit or abort one transaction of several records (Sections 6-8).'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.transactions.producer.TransactionalProducerApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: 'localhost:9093,localhost:9094,localhost:9095'
+    systemProperty 'topic', findProperty('topic') ?: 'txn-lab-orders'
+    systemProperty 'transactionalId', findProperty('transactionalId') ?: 'txn-lab-producer-1'
+    systemProperty 'action', findProperty('action') ?: 'commit'
+    systemProperty 'startEventNumber', findProperty('startEventNumber') ?: '1'
+}
+
+tasks.register('runIsolationConsumer', JavaExec) {
+    group = 'lab experiments'
+    description = 'Experiment 5: consume a topic at a chosen isolation level, to compare against transactional commit/abort (Section 9).'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.transactions.consumer.IsolationLevelConsumerApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: 'localhost:9093,localhost:9094,localhost:9095'
+    systemProperty 'topic', findProperty('topic') ?: 'txn-lab-orders'
+    systemProperty 'isolationLevel', findProperty('isolationLevel') ?: 'read_committed'
+    systemProperty 'groupId', findProperty('groupId') ?: 'txn-lab-isolation-consumer'
+}
+
+tasks.register('runMultiPartitionTransaction', JavaExec) {
+    group = 'lab experiments'
+    description = 'Experiment 6: one transaction writing to multiple topics/partitions (orders, payments, audit) -- commit or abort (Section 10).'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.transactions.producer.MultiPartitionTransactionApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: 'localhost:9093,localhost:9094,localhost:9095'
+    systemProperty 'transactionalId', findProperty('transactionalId') ?: 'txn-lab-multi-partition-producer'
+    systemProperty 'action', findProperty('action') ?: 'commit'
+    systemProperty 'eventId', findProperty('eventId') ?: 'Order-500'
+}
+
+tasks.register('runFencingDemo', JavaExec) {
+    group = 'lab experiments'
+    description = 'Experiment 7: producer fencing -- run TWICE with the SAME transactionalId, second run fences the first (Section 12).'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.transactions.producer.FencingDemoApp'
+    standardInput = System.in
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: 'localhost:9093,localhost:9094,localhost:9095'
+    systemProperty 'topic', findProperty('topic') ?: 'txn-lab-fencing'
+    systemProperty 'transactionalId', findProperty('transactionalId') ?: 'txn-lab-fencing-demo'
+    systemProperty 'instanceName', findProperty('instanceName') ?: 'instance-A'
+}
+
+tasks.register('runNonTransactionalPipeline', JavaExec) {
+    group = 'lab experiments'
+    description = 'Experiment 8: consume-transform-produce WITHOUT transactions -- crash between produce and offset commit causes duplicated output on replay (Section 13).'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.transactions.eos.NonTransactionalConsumeTransformProduceApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: 'localhost:9093,localhost:9094,localhost:9095'
+    systemProperty 'inputTopic', findProperty('inputTopic') ?: 'txn-lab-pipeline-input'
+    systemProperty 'outputTopic', findProperty('outputTopic') ?: 'txn-lab-pipeline-output'
+    systemProperty 'groupId', findProperty('groupId') ?: 'txn-lab-pipeline-non-transactional'
+    systemProperty 'crashAfterProduce', findProperty('crashAfterProduce') ?: 'false'
+}
+
+tasks.register('runTransactionalPipeline', JavaExec) {
+    group = 'lab experiments'
+    description = 'Experiments 9-11: transactional consume-transform-produce -- beginTransaction/produce/sendOffsetsToTransaction/commitTransaction, with deterministic crash injection (Sections 14-16).'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.transactions.eos.TransactionalConsumeTransformProduceApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: 'localhost:9093,localhost:9094,localhost:9095'
+    systemProperty 'inputTopic', findProperty('inputTopic') ?: 'txn-lab-pipeline-input'
+    systemProperty 'outputTopic', findProperty('outputTopic') ?: 'txn-lab-pipeline-output'
+    systemProperty 'groupId', findProperty('groupId') ?: 'txn-lab-pipeline-transactional'
+    systemProperty 'transactionalId', findProperty('transactionalId') ?: 'txn-lab-pipeline-processor-1'
+    systemProperty 'failurePoint', findProperty('failurePoint') ?: 'NONE'
+}
