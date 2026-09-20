@@ -1,0 +1,11 @@
+{
+  "type": "record",
+  "name": "OrderEvent",
+  "namespace": "com.kafkalab.schemaevolution.avro",
+  "doc": "WP-10 breaking-change example (Section 7 / 22): `amount` changed from a decimal logical type to a plain string -- an incompatible type change with no promotion path between them. This is also Section 22's deliberate production-style failure example (amount decimal -> string).",
+  "fields": [
+    { "name": "orderId", "type": "string" },
+    { "name": "customerId", "type": "string" },
+    { "name": "amount", "type": "string" }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "type": "record",
+  "name": "OrderEvent",
+  "namespace": "com.kafkalab.schemaevolution.avro",
+  "doc": "WP-10 breaking-change example (Section 7 / 22), corrected after a real, surprising finding: changing `amount` from the decimal logical type to `string` turned out to be ACCEPTED by the registry, because Avro's schema resolution treats `bytes` and `string` as mutually promotable primitive types regardless of any logical type layered on top -- see the conceptual doc, Section 7, 'A finding that corrected this lab's own first attempt.' `orderId` changed from `string` to `int` here instead: string and int are NOT mutually promotable in Avro (only numeric widening int->long->float->double is, plus the specific bytes<->string case), so this genuinely breaks.",
+  "fields": [
+    { "name": "orderId", "type": "int" },
+    { "name": "customerId", "type": "string" },
+    { "name": "amount", "type": { "type": "bytes", "logicalType": "decimal", "precision": 10, "scale": 2 } }
+  ]
+}

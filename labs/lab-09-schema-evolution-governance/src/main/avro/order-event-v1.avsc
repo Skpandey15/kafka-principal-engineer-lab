@@ -1,0 +1,11 @@
+{
+  "type": "record",
+  "name": "OrderEvent",
+  "namespace": "com.kafkalab.schemaevolution.avro",
+  "doc": "WP-10 v1 baseline. amount uses Avro's decimal logical type (bytes underneath, precision 10, scale 2) rather than a floating-point type -- see the lab README, 'Why not double,' for why a binary floating-point type is not an appropriate representation for money at all, independent of Avro.",
+  "fields": [
+    { "name": "orderId", "type": "string" },
+    { "name": "customerId", "type": "string" },
+    { "name": "amount", "type": { "type": "bytes", "logicalType": "decimal", "precision": 10, "scale": 2 } }
+  ]
+}

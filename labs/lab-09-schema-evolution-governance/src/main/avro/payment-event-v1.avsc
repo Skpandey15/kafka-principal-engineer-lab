@@ -1,0 +1,11 @@
+{
+  "type": "record",
+  "name": "PaymentEvent",
+  "namespace": "com.kafkalab.schemaevolution.avro",
+  "doc": "A SECOND, structurally unrelated event type -- used by Section 12's naming-strategy experiment to show what happens when two different record types are produced to the SAME Kafka topic.",
+  "fields": [
+    { "name": "paymentId", "type": "string" },
+    { "name": "orderId", "type": "string" },
+    { "name": "amount", "type": { "type": "bytes", "logicalType": "decimal", "precision": 10, "scale": 2 } }
+  ]
+}
