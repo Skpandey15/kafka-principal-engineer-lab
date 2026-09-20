@@ -1,0 +1,12 @@
+{
+  "type": "record",
+  "name": "OrderEvent",
+  "namespace": "com.kafkalab.schemaevolution.avro",
+  "doc": "WP-10 breaking-change example, used TWICE with different meanings depending on what the subject's history already contains when it is tested (see the lab README, Experiments 3 and 7, and the conceptual doc, Sections 7 and 17): identical to v2 except `currency` has NO default. Tested directly against a v1-only subject, this demonstrates Section 7's 'required field added without default' rejection. Tested against a v1+v2 subject under BACKWARD (non-transitive, compares only to v2) it is ACCEPTED -- v2's writer schema always has a currency value, so no default is needed to resolve it -- but under BACKWARD_TRANSITIVE (compares to every prior version, including v1) it is REJECTED, since v1 data has no currency field and this schema has no default to fall back on. This asymmetry is exactly what Section 17 (transitive compatibility) exists to demonstrate.",
+  "fields": [
+    { "name": "orderId", "type": "string" },
+    { "name": "customerId", "type": "string" },
+    { "name": "amount", "type": { "type": "bytes", "logicalType": "decimal", "precision": 10, "scale": 2 } },
+    { "name": "currency", "type": "string" }
+  ]
+}

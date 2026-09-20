@@ -1,0 +1,204 @@
+// Lab 09 — Schema Evolution & Schema Governance (WP-10).
+//
+// Same one-project-per-lab convention every prior lab uses. This lab adds
+// the Confluent Maven repository (packages.confluent.io) alongside Maven
+// Central, since io.confluent:* client artifacts (the Avro/Protobuf/JSON
+// Schema serializers and the Schema Registry client) are published there,
+// not to Maven Central -- see the lab README, "Why the Confluent Maven
+// repository."
+
+import java.time.Duration
+
+plugins {
+    id 'java'
+    id 'com.google.protobuf' version '0.9.4'
+}
+
+group = 'com.kafkalab'
+version = '0.1.0'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+repositories {
+    mavenCentral()
+    maven {
+        url 'https://packages.confluent.io/maven/'
+    }
+}
+
+// Pinned to the SAME version as the broker-side confluentinc/cp-schema-registry
+// image this lab runs (see platform/schema-registry/docker-compose.yml) --
+// client and server versions matching exactly avoids any ambiguity about
+// which side's behavior an observed result comes from.
+ext {
+    confluentVersion = '7.9.2'
+}
+
+dependencies {
+    implementation 'org.apache.kafka:kafka-clients:4.3.1'
+
+    implementation "io.confluent:kafka-avro-serializer:${confluentVersion}"
+    implementation "io.confluent:kafka-protobuf-serializer:${confluentVersion}"
+    implementation "io.confluent:kafka-json-schema-serializer:${confluentVersion}"
+    implementation "io.confluent:kafka-schema-registry-client:${confluentVersion}"
+    implementation 'org.apache.avro:avro:1.12.0'
+    // Pinned to 3.25.5, NOT the newer 4.x line -- a real, verified finding
+    // (see the lab README, "A protobuf-java version mismatch this lab
+    // actually hit"): io.confluent:kafka-protobuf-serializer:7.9.2 is
+    // compiled/tested against protobuf-java 3.25.5 (confirmed via its own
+    // resolved dependency tree), and protobuf-java 4.x's internal
+    // GeneratedMessageV3 hierarchy changes are NOT binary-compatible with
+    // it -- using 4.29.3 here caused a real java.lang.VerifyError
+    // ("Bad type on operand stack ... DescriptorProtos$MessageOptions is
+    // not assignable to GeneratedMessageV3$ExtendableMessage") the moment
+    // a real produce() call ran.
+    implementation 'com.google.protobuf:protobuf-java:3.25.5'
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.18.2'
+
+    implementation 'org.slf4j:slf4j-api:2.0.19'
+    runtimeOnly 'org.slf4j:slf4j-simple:2.0.19'
+
+    testImplementation 'org.junit.jupiter:junit-jupiter:6.1.3'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+
+    testImplementation 'org.testcontainers:testcontainers:2.0.5'
+    testImplementation 'org.testcontainers:testcontainers-junit-jupiter:2.0.5'
+}
+
+protobuf {
+    protoc {
+        // Matched to the protobuf-java RUNTIME version above (3.25.5), not
+        // the newer 4.x line -- see that dependency's comment.
+        artifact = 'com.google.protobuf:protoc:3.25.5'
+    }
+}
+
+test {
+    useJUnitPlatform()
+    timeout = Duration.ofMinutes(10)
+    testLogging {
+        events = ['passed', 'skipped', 'failed']
+        exceptionFormat = 'full'
+    }
+}
+
+// --- Runnable experiments -------------------------------------------------
+// Default bootstrap servers point at the reused WP-07 3-broker cluster
+// (platform/kafka-cluster/); schemaRegistryUrl points at this WP's added
+// registry container (platform/schema-registry/).
+
+def defaultBootstrap = 'localhost:9093,localhost:9094,localhost:9095'
+def defaultRegistry = 'http://localhost:8081'
+
+tasks.register('runRawBytesDemo', JavaExec) {
+    group = 'lab experiments'
+    description = 'Section 3: serialize/deserialize a plain event with NO schema governance at all.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.schemaevolution.raw.RawBytesDemoApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: defaultBootstrap
+    systemProperty 'topic', findProperty('topic') ?: 'raw-orders'
+}
+
+tasks.register('runVersionSkewDemo', JavaExec) {
+    group = 'lab experiments'
+    description = 'Section 4: hand-rolled OrderEvent v1/v2 producer+consumer skew, no registry involved -- pass -PproducerVersion=v1|v2 -PconsumerVersion=v1|v2.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.schemaevolution.raw.VersionSkewDemoApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: defaultBootstrap
+    systemProperty 'topic', findProperty('topic') ?: 'version-skew-orders'
+    systemProperty 'producerVersion', findProperty('producerVersion') ?: 'v2'
+    systemProperty 'consumerVersion', findProperty('consumerVersion') ?: 'v1'
+}
+
+tasks.register('runAvroProducer', JavaExec) {
+    group = 'lab experiments'
+    description = 'Sections 5-7: Avro producer against the real Schema Registry -- pass -Pschema=v1|v2|v2-no-default|v2-renamed|v2-type-changed.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.schemaevolution.avro.AvroOrderEventProducerApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: defaultBootstrap
+    systemProperty 'schemaRegistryUrl', findProperty('schemaRegistryUrl') ?: defaultRegistry
+    systemProperty 'topic', findProperty('topic') ?: 'avro-orders'
+    systemProperty 'schema', findProperty('schema') ?: 'v1'
+}
+
+tasks.register('runAvroConsumer', JavaExec) {
+    group = 'lab experiments'
+    description = 'Sections 5-7, 18: Avro consumer, reading with a chosen reader schema version.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.schemaevolution.avro.AvroOrderEventConsumerApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: defaultBootstrap
+    systemProperty 'schemaRegistryUrl', findProperty('schemaRegistryUrl') ?: defaultRegistry
+    systemProperty 'topic', findProperty('topic') ?: 'avro-orders'
+    systemProperty 'groupId', findProperty('groupId') ?: 'avro-orders-consumer'
+    systemProperty 'runForMs', findProperty('runForMs') ?: '10000'
+}
+
+tasks.register('checkAvroCompatibility', JavaExec) {
+    group = 'lab experiments'
+    description = 'Section 23: CI-callable compatibility gate -- checks a candidate .avsc against the registered subject BEFORE registering it.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.schemaevolution.ci.SchemaCompatibilityGateApp'
+    systemProperty 'schemaRegistryUrl', findProperty('schemaRegistryUrl') ?: defaultRegistry
+    systemProperty 'subject', findProperty('subject') ?: 'avro-orders-value'
+    systemProperty 'schemaFile', findProperty('schemaFile') ?: 'src/main/avro/order-event-v2.avsc'
+}
+
+tasks.register('runNamingStrategyDemo', JavaExec) {
+    group = 'lab experiments'
+    description = 'Section 12: RecordNameStrategy lets two different event types share one topic, each with its own subject.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.schemaevolution.avro.NamingStrategyDemoApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: defaultBootstrap
+    systemProperty 'schemaRegistryUrl', findProperty('schemaRegistryUrl') ?: defaultRegistry
+    systemProperty 'topic', findProperty('topic') ?: 'multi-event-topic'
+}
+
+tasks.register('runProtobufProducer', JavaExec) {
+    group = 'lab experiments'
+    description = 'Section 19: Protobuf producer against the real Schema Registry.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.schemaevolution.protobuf.ProtobufOrderEventProducerApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: defaultBootstrap
+    systemProperty 'schemaRegistryUrl', findProperty('schemaRegistryUrl') ?: defaultRegistry
+    systemProperty 'topic', findProperty('topic') ?: 'protobuf-orders'
+}
+
+tasks.register('runJsonSchemaProducer', JavaExec) {
+    group = 'lab experiments'
+    description = 'Section 20: JSON Schema producer against the real Schema Registry.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.schemaevolution.jsonschema.JsonSchemaOrderEventProducerApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: defaultBootstrap
+    systemProperty 'schemaRegistryUrl', findProperty('schemaRegistryUrl') ?: defaultRegistry
+    systemProperty 'topic', findProperty('topic') ?: 'jsonschema-orders'
+}
+
+tasks.register('runReaderWriterResolutionDemo', JavaExec) {
+    group = 'lab experiments'
+    description = 'Section 18: real Avro schema resolution -- decode v1 bytes with reader schemas v1, v2, and v3 (offline, no Kafka/registry involved).'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.schemaevolution.avro.ReaderWriterResolutionDemoApp'
+}
+
+tasks.register('runRegistryFailureDemo', JavaExec) {
+    group = 'lab experiments'
+    description = 'Sections 30-31: pauses mid-run for the operator to stop the Schema Registry, then observes real behavior.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.schemaevolution.avro.RegistryFailureDemoApp'
+    standardInput = System.in
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: defaultBootstrap
+    systemProperty 'schemaRegistryUrl', findProperty('schemaRegistryUrl') ?: defaultRegistry
+    systemProperty 'topic', findProperty('topic') ?: 'avro-orders'
+}
+
+tasks.register('inspectWireFormat', JavaExec) {
+    group = 'lab experiments'
+    description = 'Section 10: dump the raw bytes of the most recent record on a topic, byte-by-byte, showing the magic byte + schema ID framing.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.schemaevolution.avro.WireFormatInspectorApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: defaultBootstrap
+    systemProperty 'topic', findProperty('topic') ?: 'avro-orders'
+}

@@ -1,0 +1,10 @@
+{
+  "type": "record",
+  "name": "OrderEvent",
+  "namespace": "com.kafkalab.schemaevolution.avro",
+  "doc": "WP-10 experiment (Section 7 / 17): `customerId` removed outright (no rename, no alias). Because v1 never gave `customerId` a default, this is asymmetric: a NEW (this schema) reader CAN read OLD (v1) data fine (the extra field is simply ignored) -- so it is BACKWARD-compatible -- but an OLD (v1) reader CANNOT read data written with this schema, since v1's reader schema requires customerId and this writer schema never supplies it and v1 has no default for it -- so it is NOT forward-compatible. Real captured registry results for both directions: conceptual doc, Section 7.",
+  "fields": [
+    { "name": "orderId", "type": "string" },
+    { "name": "amount", "type": { "type": "bytes", "logicalType": "decimal", "precision": 10, "scale": 2 } }
+  ]
+}

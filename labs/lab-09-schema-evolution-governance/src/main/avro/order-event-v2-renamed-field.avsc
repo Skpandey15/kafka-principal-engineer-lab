@@ -1,0 +1,11 @@
+{
+  "type": "record",
+  "name": "OrderEvent",
+  "namespace": "com.kafkalab.schemaevolution.avro",
+  "doc": "WP-10 breaking-change example (Section 7): `customerId` renamed to `custId` with NO `aliases` entry -- from the schema-compatibility checker's point of view this looks like `customerId` was REMOVED (with no default to fall back on for a v1-shaped reader) and an entirely unrelated new required field `custId` was ADDED (also with no default) -- both independently breaking.",
+  "fields": [
+    { "name": "orderId", "type": "string" },
+    { "name": "custId", "type": "string" },
+    { "name": "amount", "type": { "type": "bytes", "logicalType": "decimal", "precision": 10, "scale": 2 } }
+  ]
+}

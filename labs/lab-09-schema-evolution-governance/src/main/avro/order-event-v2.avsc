@@ -1,0 +1,12 @@
+{
+  "type": "record",
+  "name": "OrderEvent",
+  "namespace": "com.kafkalab.schemaevolution.avro",
+  "doc": "WP-10 v2: adds `currency` with a default value -- the compatible evolution (Section 6). A NEW consumer reading OLD (v1) data gets currency=USD via this default; this is exactly what makes the addition backward-compatible.",
+  "fields": [
+    { "name": "orderId", "type": "string" },
+    { "name": "customerId", "type": "string" },
+    { "name": "amount", "type": { "type": "bytes", "logicalType": "decimal", "precision": 10, "scale": 2 } },
+    { "name": "currency", "type": "string", "default": "USD" }
+  ]
+}

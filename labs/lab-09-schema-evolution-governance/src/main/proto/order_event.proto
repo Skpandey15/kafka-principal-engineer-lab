@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package com.kafkalab.schemaevolution.protobuf;
+
+option java_outer_classname = "OrderEventProto";
+
+// WP-10 Section 19. Field NUMBERS (the "= 1", "= 2", ...), not field names,
+// are what identify a field on the wire in Protobuf -- this is the single
+// most important fact for safe evolution. Adding field 4 (`currency`)
+// below is always safe: old readers that don't know field 4 simply skip
+// it; new readers reading old data that never set field 4 get its default
+// ("", the empty string, for a proto3 `string`).
+//
+// What is NEVER safe: reusing a field number for a DIFFERENT field later,
+// or renumbering an existing field -- see order_event_v2_reused_field_number.proto
+// for a deliberately dangerous example, and the `reserved` keyword this
+// schema does NOT yet need (it would if a field were ever removed).
+message OrderEvent {
+  string order_id = 1;
+  string customer_id = 2;
+  string amount = 3; // proto3 has no native decimal type; represented as a string here deliberately -- see the README's "Why not double" note, same reasoning as the Avro schema.
+  string currency = 4; // added in v2 -- a new, unused field number, safe.
+}
