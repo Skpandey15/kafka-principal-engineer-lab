@@ -1,0 +1,91 @@
+// Lab 07 — KRaft Controller Quorum & Failure (WP-08).
+//
+// Same dependency set and versions as prior labs -- a separate,
+// self-contained Gradle project, per this repository's established
+// one-project-per-lab convention (see lab-03's README, "Why a separate
+// project").
+
+import java.time.Duration
+
+plugins {
+    id 'java'
+}
+
+group = 'com.kafkalab'
+version = '0.1.0'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'org.apache.kafka:kafka-clients:4.3.1'
+
+    implementation 'org.slf4j:slf4j-api:2.0.19'
+    runtimeOnly 'org.slf4j:slf4j-simple:2.0.19'
+
+    testImplementation 'org.junit.jupiter:junit-jupiter:6.1.3'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+
+    testImplementation 'org.testcontainers:testcontainers:2.0.5'
+    testImplementation 'org.testcontainers:testcontainers-junit-jupiter:2.0.5'
+}
+
+test {
+    useJUnitPlatform()
+    timeout = Duration.ofMinutes(8)
+    testLogging {
+        events = ['passed', 'skipped', 'failed']
+        exceptionFormat = 'full'
+    }
+}
+
+// --- Runnable experiments -------------------------------------------------
+
+tasks.register('runProducer', JavaExec) {
+    group = 'lab experiments'
+    description = 'Seed a topic with eventId-tagged order events (burst mode).'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.controllerquorum.producer.OrderEventProducerApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: 'localhost:9096,localhost:9097,localhost:9098'
+    systemProperty 'topic', findProperty('topic') ?: 'quorum-orders'
+    systemProperty 'count', findProperty('count') ?: '10'
+    systemProperty 'startEventNumber', findProperty('startEventNumber') ?: '1'
+    systemProperty 'sync', findProperty('sync') ?: 'true'
+}
+
+tasks.register('runContinuousProducer', JavaExec) {
+    group = 'lab experiments'
+    description = 'Continuously produce -- for the control-plane-vs-data-plane experiments (6, 10, 11).'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.controllerquorum.producer.ContinuousProducerApp'
+    standardInput = System.in
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: 'localhost:9096,localhost:9097,localhost:9098'
+    systemProperty 'topic', findProperty('topic') ?: 'quorum-orders'
+    systemProperty 'delayMs', findProperty('delayMs') ?: '500'
+}
+
+tasks.register('runContinuousConsumer', JavaExec) {
+    group = 'lab experiments'
+    description = 'Continuously consume -- for the control-plane-vs-data-plane experiments (6, 10, 11).'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.controllerquorum.consumer.ContinuousConsumerApp'
+    standardInput = System.in
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: 'localhost:9096,localhost:9097,localhost:9098'
+    systemProperty 'topic', findProperty('topic') ?: 'quorum-orders'
+    systemProperty 'groupId', findProperty('groupId') ?: 'quorum-lab-consumer'
+    systemProperty 'clientId', findProperty('clientId') ?: 'consumer-1'
+}
+
+tasks.register('describeQuorum', JavaExec) {
+    group = 'lab experiments'
+    description = 'Print metadata-quorum status via AdminClient.describeMetadataQuorum() -- the Java-API equivalent of kafka-metadata-quorum.sh describe --status.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.controllerquorum.support.DescribeQuorumApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: 'localhost:9096,localhost:9097,localhost:9098'
+}
