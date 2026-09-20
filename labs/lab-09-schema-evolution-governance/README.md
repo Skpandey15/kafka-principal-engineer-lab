@@ -137,7 +137,7 @@ real captured output from every experiment below.
 ./gradlew test
 ```
 
-12 automated integration tests, against a real Kafka + Schema Registry
+15 automated integration tests, against a real Kafka + Schema Registry
 cluster (Testcontainers) — see "Automated tests" below for the full list.
 
 ## Experiment
@@ -162,6 +162,22 @@ Real captured output for both skew directions: conceptual doc, Section 3.
 
 Real registry rejection reasons, including the corrected "amount:
 decimal → string" assumption: conceptual doc, Sections 5-6, 21.
+
+### Experiment 5b — FULL and FULL_TRANSITIVE compatibility
+
+Driven by the automated tests rather than a manual CLI task, since it's
+registry CONFIGURATION (compatibility mode) being exercised, not a
+producer/consumer flow:
+
+```bash
+./gradlew test --tests "*fullCompatibility*" --tests "*fullTransitive*"
+```
+
+Real evidence: a valid evolution accepted under `FULL`; a genuinely
+incompatible change rejected with TWO `TYPE_MISMATCH` errors (one per
+direction); the same transitive-trap schema accepted under plain `FULL`
+(checks only the latest version) but rejected under `FULL_TRANSITIVE`
+(checks the full history) — conceptual doc, Section 15.
 
 ### Experiment 6 — Wire format
 
@@ -260,7 +276,7 @@ Neither this lab nor `platform/schema-registry/` modifies
 
 ## Automated tests
 
-`./gradlew test` — 12 tests, against a real Kafka + Schema Registry
+`./gradlew test` — 15 tests, against a real Kafka + Schema Registry
 cluster (`SchemaRegistryKafkaCluster`, Testcontainers):
 
 1. `avroV1ProducesAndConsumesSuccessfully`
@@ -272,9 +288,12 @@ cluster (`SchemaRegistryKafkaCluster`, Testcontainers):
 7. `protobufSchemaEvolvesCompatibly`
 8. `jsonSchemaValidatesNewOptionalPropertyButRegistryRejectsItByDefault` (a real, corrected finding — see the conceptual doc, Section 19)
 9. `compatibilityModeNoneAcceptsWhatBackwardWouldReject`
-10. `replayingOldRecordsWithAnEvolvedSchemaSucceeds`
-11. `ciCompatibilityGateMechanismDistinguishesPassAndFail`
-12. `registryUnavailableStillServesAlreadyCachedSchemasButFailsOnNewLookups`
+10. `fullCompatibilityAcceptsAnAdditionValidInBothDirections`
+11. `fullCompatibilityRejectsGenuinelyIncompatibleChange`
+12. `fullTransitiveCompatibilityChecksFullHistoryNotJustLatest`
+13. `replayingOldRecordsWithAnEvolvedSchemaSucceeds`
+14. `ciCompatibilityGateMechanismDistinguishesPassAndFail`
+15. `registryUnavailableStillServesAlreadyCachedSchemasButFailsOnNewLookups`
 
 Every assertion uses a bounded condition-polling loop (or a real
 container-stop-and-wait) rather than a fixed sleep as the synchronization

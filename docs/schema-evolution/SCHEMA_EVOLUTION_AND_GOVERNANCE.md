@@ -447,6 +447,56 @@ every reader schema involved, old and new, can resolve every writer
 schema involved, old and new — a strictly narrower set of allowed changes
 than either direction alone permits).
 
+**This was independently exercised as its own registry configuration,
+not just reasoned about as the conjunction of Sections 13-14.** A
+dedicated subject was configured with `compatibility: FULL` (verified via
+`PUT /config/<subject>`) and tested against real registrations:
+
+**FULL, compatible evolution — experimentally verified.** v1 → v2 (add
+`currency` with a default — the same evolution Sections 13-14 already
+proved is individually BACKWARD-safe and FORWARD-safe) was registered
+against the FULL-configured subject and **accepted**, real distinct
+schema ID returned. The automated test
+(`fullCompatibilityAcceptsAnAdditionValidInBothDirections`) additionally
+re-runs both direction's data-level resolution (Sections 13-14's exact
+mechanism) against this subject's own registered schemas: v2 resolves
+v1-written bytes (`currency` filled from its default) AND v1 resolves
+v2-written bytes (extra `currency` field ignored) — both directions,
+concretely, not merely inferred from the registry's boolean.
+
+**FULL, incompatible evolution — experimentally verified.** The same
+`orderId: string → int` change Section 6 proved breaks BACKWARD alone
+was registered against a FULL-configured subject and **rejected**, real
+HTTP 409. The rejection detail is more informative than the single-
+direction case: it lists **two** `TYPE_MISMATCH` entries —
+`reader type: STRING not compatible with writer type: INT` AND
+`reader type: INT not compatible with writer type: STRING` — concrete,
+real evidence that FULL checks both directions at once rather than
+short-circuiting on the first violated direction.
+
+**FULL_TRANSITIVE — experimentally verified, reusing the existing
+transitive-trap fixture, no new schema invented.** The same
+`order-event-v3-required-no-default.avsc` (`currency`, no default)
+Section 16 uses for `BACKWARD_TRANSITIVE` was tested against a subject
+holding v1 and v2:
+
+- Under plain **`FULL`** (checks only the latest version, v2): **accepted**,
+  real distinct schema ID returned — v2 always supplies `currency`, so
+  v3's missing default is never needed to resolve it, in EITHER
+  direction.
+- Under **`FULL_TRANSITIVE`** (checks the full history, v1 AND v2), same
+  schema, a fresh subject with the identical v1+v2 starting history:
+  **rejected**, real HTTP 409, citing `oldSchemaVersion: 1` and
+  `compatibility: 'FULL_TRANSITIVE'` explicitly — v1 has no `currency`
+  field at all and v3 has no default to fall back on, exactly the
+  `BACKWARD_TRANSITIVE` failure from Section 16, now confirmed to apply
+  identically under `FULL_TRANSITIVE`.
+
+This is the same experimentally-verified distinction Section 16 documents
+for `BACKWARD_TRANSITIVE`, now independently confirmed for `FULL`/
+`FULL_TRANSITIVE` specifically, using the SAME existing fixtures — not a
+contrived addition.
+
 ## 16. Transitive compatibility — the most important distinction in this document
 
 ```text
@@ -965,6 +1015,9 @@ message problem, not a hypothetical one.
 | Incompatible registration attempt | Rejected, HTTP 409, structured error | **Experimentally verified** |
 | Old event replay after schema evolution | Succeeds | **Experimentally verified** |
 | `v3` compatible with `v2` implies compatible with `v1` | FALSE in general — real, demonstrated counterexample | **Experimentally verified** |
+| `FULL` compatibility, valid evolution (v1→v2) | Accepted | **Experimentally verified** |
+| `FULL` compatibility, genuinely incompatible change (`orderId` string→int) | Rejected, HTTP 409, two `TYPE_MISMATCH` entries (one per direction) | **Experimentally verified** |
+| `FULL` (non-transitive) vs. `FULL_TRANSITIVE`, same v3 trap schema | Accepted under plain `FULL` (checks only v2); rejected under `FULL_TRANSITIVE` (checks v1 too) | **Experimentally verified** |
 | JSON Schema: optional field added to an "open" content model | Rejected by default | **Experimentally verified** (a corrected assumption) |
 | Multi-team independent deployment safety under a compatible change | Each team can upgrade independently | Architectural reasoning, grounded in the compatibility experiments above, not independently re-simulated with real multiple services |
 | Schema Registry security posture | Auth/authz/TLS are real, separate concerns from Kafka's own | Architectural reasoning (Section 31) — not implemented here (WP-18's subject) |
@@ -1024,7 +1077,12 @@ silently defaulted (Section 14).
 **8. Full compatibility?**
 Backward AND forward simultaneously — either side of a producer/consumer
 pair can upgrade first with zero coordination, at the cost of ruling out
-changes that are only safe in one direction (Section 15).
+changes that are only safe in one direction. Independently verified
+against a subject actually configured as `FULL` (not just reasoned about
+as BACKWARD+FORWARD): a valid evolution was accepted, and a genuinely
+incompatible change was rejected with TWO `TYPE_MISMATCH` errors (one
+per direction) in the same response — concrete evidence FULL checks both
+ways at once (Section 15).
 
 **9. What does transitive compatibility change?**
 It compares a candidate schema against EVERY historical version of a

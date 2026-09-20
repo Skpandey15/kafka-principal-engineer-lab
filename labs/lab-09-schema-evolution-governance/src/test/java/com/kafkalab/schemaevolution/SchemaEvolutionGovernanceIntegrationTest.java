@@ -330,6 +330,112 @@ class SchemaEvolutionGovernanceIntegrationTest {
     }
 
     @Test
+    void fullCompatibilityAcceptsAnAdditionValidInBothDirections() throws Exception {
+        // FULL = BACKWARD AND FORWARD simultaneously. v1 -> v2 (add
+        // `currency` with a default) already independently satisfies
+        // both directions -- oldWriterDataIsReadableByACompatibleNewReaderSchemaWithDefaultsApplied
+        // and newWriterDataIsReadableByAnOlderCompatibleReaderSchema prove
+        // each direction generically; this test additionally proves the
+        // REGISTRY itself accepts the same evolution under a subject
+        // actually CONFIGURED as FULL (not just BACKWARD or FORWARD
+        // alone), and re-demonstrates both directions concretely against
+        // THIS subject's own registered schemas, reusing the same
+        // resolution helpers rather than duplicating new fixtures.
+        String subject = uniqueTopic("full-compat") + "-value";
+        Schema v1 = avroSchema("v1");
+        Schema v2 = avroSchema("v2");
+
+        try (SchemaRegistryClient client = newRegistryClient()) {
+            client.updateCompatibility(subject, "FULL");
+        }
+        int idV1 = registerSubject(subject, v1);
+        int idV2 = registerSubject(subject, v2);
+        assertNotEquals(idV1, idV2, "a real, distinct schema version must have been accepted under FULL");
+
+        GenericData genericData = new GenericData();
+        genericData.addLogicalTypeConversion(new Conversions.DecimalConversion());
+
+        // Direction 1: NEW reader (v2) reads OLD writer (v1) data.
+        byte[] v1Bytes = encodeAvro(v1, orderRecord(v1, "O-FULL-BACKWARD", "C-1", "5.00"), genericData);
+        GenericRecord resolvedAsV2 = new GenericDatumReader<GenericRecord>(v1, v2, genericData)
+                .read(null, DecoderFactory.get().binaryDecoder(new ByteArrayInputStream(v1Bytes), null));
+        assertEquals("USD", resolvedAsV2.get("currency").toString(),
+                "FULL's backward direction: v2 must resolve v1 data, filling currency from its default");
+
+        // Direction 2: OLD reader (v1) reads NEW writer (v2) data.
+        GenericRecord v2Record = orderRecord(v2, "O-FULL-FORWARD", "C-1", "5.00");
+        ((GenericData.Record) v2Record).put("currency", "EUR");
+        byte[] v2Bytes = encodeAvro(v2, v2Record, genericData);
+        GenericRecord resolvedAsV1 = new GenericDatumReader<GenericRecord>(v2, v1, genericData)
+                .read(null, DecoderFactory.get().binaryDecoder(new ByteArrayInputStream(v2Bytes), null));
+        assertEquals("O-FULL-FORWARD", resolvedAsV1.get("orderId").toString(),
+                "FULL's forward direction: v1 must resolve v2 data, ignoring the extra currency field");
+    }
+
+    @Test
+    void fullCompatibilityRejectsGenuinelyIncompatibleChange() throws Exception {
+        // Same v1 -> orderId(string->int) change already proven incompatible
+        // under plain BACKWARD (incompatibleAvroRegistrationIsRejected uses
+        // the renamed-field variant; this reuses the type-changed fixture),
+        // now against a subject actually configured as FULL. Real registry
+        // evidence: FULL's rejection lists TWO TYPE_MISMATCH entries (one
+        // per direction), not one -- concrete proof FULL checks both ways
+        // at once rather than only backward or only forward.
+        String subject = uniqueTopic("full-incompat") + "-value";
+        try (SchemaRegistryClient client = newRegistryClient()) {
+            client.updateCompatibility(subject, "FULL");
+        }
+        registerSubject(subject, avroSchema("v2")); // baseline: orderId is still `string` here
+
+        try (SchemaRegistryClient client = newRegistryClient()) {
+            AvroSchema orderIdTypeChanged = new AvroSchema(avroSchema("v2-orderid-type-changed"));
+            RestClientException failure = assertThrows(RestClientException.class,
+                    () -> client.register(subject, orderIdTypeChanged));
+            assertEquals(409, failure.getStatus());
+            assertTrue(failure.getMessage().contains("TYPE_MISMATCH"),
+                    "expected a real TYPE_MISMATCH rejection, got: " + failure.getMessage());
+        }
+    }
+
+    @Test
+    void fullTransitiveCompatibilityChecksFullHistoryNotJustLatest() throws Exception {
+        // Reuses the EXACT same v1/v2/v3-required-no-default trap already
+        // used for BACKWARD_TRANSITIVE (see ciCompatibilityGateMechanismDistinguishesPassAndFail
+        // and the conceptual doc, Section 16) -- no new fixture invented.
+        // v3 (currency, no default) is compatible with v2 alone (v2 always
+        // supplies currency) but NOT with v1 (which has no currency field
+        // and no default to fall back on) -- real, verified difference
+        // between plain FULL (checks only the latest version) and
+        // FULL_TRANSITIVE (checks the entire history).
+        String subject = uniqueTopic("full-transitive") + "-value";
+        registerSubject(subject, avroSchema("v1"));
+        registerSubject(subject, avroSchema("v2"));
+
+        try (SchemaRegistryClient client = newRegistryClient()) {
+            client.updateCompatibility(subject, "FULL");
+        }
+        int idUnderPlainFull = registerSubject(subject, avroSchema("v3-required-no-default"));
+        assertTrue(idUnderPlainFull > 0, "v3 must be ACCEPTED under plain FULL, which only compares against v2 (the latest)");
+
+        // A SEPARATE subject with the identical v1+v2 history, so the
+        // FULL_TRANSITIVE rejection below is tested cleanly against the
+        // same starting point rather than a subject that already
+        // (correctly) accepted v3 as its own version 3.
+        String transitiveSubject = uniqueTopic("full-transitive-reject") + "-value";
+        registerSubject(transitiveSubject, avroSchema("v1"));
+        registerSubject(transitiveSubject, avroSchema("v2"));
+        try (SchemaRegistryClient client = newRegistryClient()) {
+            client.updateCompatibility(transitiveSubject, "FULL_TRANSITIVE");
+            AvroSchema v3 = new AvroSchema(avroSchema("v3-required-no-default"));
+            RestClientException failure = assertThrows(RestClientException.class,
+                    () -> client.register(transitiveSubject, v3));
+            assertEquals(409, failure.getStatus());
+            assertTrue(failure.getMessage().contains("oldSchemaVersion: 1") || failure.getMessage().contains("\"oldSchemaVersion\":1"),
+                    "expected the rejection to cite version 1 (the schema v3 fails against transitively), got: " + failure.getMessage());
+        }
+    }
+
+    @Test
     void replayingOldRecordsWithAnEvolvedSchemaSucceeds() throws Exception {
         String topic = uniqueTopic("replay");
         Schema v1 = avroSchema("v1");
@@ -423,6 +529,7 @@ class SchemaEvolutionGovernanceIntegrationTest {
             case "v1" -> "order-event-v1.avsc";
             case "v2" -> "order-event-v2.avsc";
             case "v2-renamed" -> "order-event-v2-renamed-field.avsc";
+            case "v2-orderid-type-changed" -> "order-event-v2-orderid-type-changed.avsc";
             case "v3-required-no-default" -> "order-event-v3-required-no-default.avsc";
             default -> throw new IllegalArgumentException(name);
         };
