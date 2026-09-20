@@ -1,0 +1,87 @@
+// Lab 06 — Replication, ISR & Broker Failure (WP-07).
+//
+// Same dependency set and versions as prior labs -- a separate,
+// self-contained Gradle project, per this repository's established
+// one-project-per-lab convention (see lab-03's README, "Why a separate
+// project").
+
+import java.time.Duration
+
+plugins {
+    id 'java'
+}
+
+group = 'com.kafkalab'
+version = '0.1.0'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'org.apache.kafka:kafka-clients:4.3.1'
+
+    implementation 'org.slf4j:slf4j-api:2.0.19'
+    runtimeOnly 'org.slf4j:slf4j-simple:2.0.19'
+
+    testImplementation 'org.junit.jupiter:junit-jupiter:6.1.3'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+
+    testImplementation 'org.testcontainers:testcontainers:2.0.5'
+    testImplementation 'org.testcontainers:testcontainers-junit-jupiter:2.0.5'
+}
+
+test {
+    useJUnitPlatform()
+    timeout = Duration.ofMinutes(8)
+    testLogging {
+        events = ['passed', 'skipped', 'failed']
+        exceptionFormat = 'full'
+    }
+}
+
+// --- Runnable experiments -------------------------------------------------
+
+tasks.register('runProducer', JavaExec) {
+    group = 'lab experiments'
+    description = 'Seed a topic with eventId-tagged order events (burst mode); configurable acks and sync/async send.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.replication.producer.OrderEventProducerApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: 'localhost:9093,localhost:9094,localhost:9095'
+    systemProperty 'topic', findProperty('topic') ?: 'replicated-orders'
+    systemProperty 'count', findProperty('count') ?: '10'
+    systemProperty 'startEventNumber', findProperty('startEventNumber') ?: '1'
+    systemProperty 'acks', findProperty('acks') ?: 'all'
+    systemProperty 'sync', findProperty('sync') ?: 'false'
+    systemProperty 'idempotence', findProperty('idempotence') ?: 'true'
+}
+
+tasks.register('runContinuousProducer', JavaExec) {
+    group = 'lab experiments'
+    description = 'Continuously produce while a broker is killed and recovered -- retry/failover observability (Experiment 13).'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.replication.producer.ContinuousProducerApp'
+    standardInput = System.in
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: 'localhost:9093,localhost:9094,localhost:9095'
+    systemProperty 'topic', findProperty('topic') ?: 'replicated-orders'
+    systemProperty 'acks', findProperty('acks') ?: 'all'
+    systemProperty 'delayMs', findProperty('delayMs') ?: '500'
+    systemProperty 'leaderCheckEveryN', findProperty('leaderCheckEveryN') ?: '5'
+}
+
+tasks.register('runContinuousConsumer', JavaExec) {
+    group = 'lab experiments'
+    description = 'Continuously consume while a broker is killed and recovered -- consumer-side failover observability (Experiment 14).'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.replication.consumer.ContinuousConsumerApp'
+    standardInput = System.in
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: 'localhost:9093,localhost:9094,localhost:9095'
+    systemProperty 'topic', findProperty('topic') ?: 'replicated-orders'
+    systemProperty 'groupId', findProperty('groupId') ?: 'replication-lab-consumer'
+    systemProperty 'clientId', findProperty('clientId') ?: 'consumer-1'
+}
