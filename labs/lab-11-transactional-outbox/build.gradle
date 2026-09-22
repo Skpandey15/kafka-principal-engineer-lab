@@ -1,0 +1,109 @@
+// Lab 11 — Transactional Outbox (WP-12).
+//
+// Same one-project-per-lab convention every prior lab uses.
+
+import java.time.Duration
+
+plugins {
+    id 'java'
+}
+
+group = 'com.kafkalab'
+version = '0.1.0'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'org.apache.kafka:kafka-clients:4.3.1'
+    implementation 'org.apache.kafka:connect-api:4.3.1'
+    implementation 'org.apache.kafka:connect-json:4.3.1'
+    // Same driver version WP-11 matched against Debezium's own bundled
+    // driver (platform/kafka-connect/plugins/debezium-connector-postgres/
+    // postgresql-42.7.13.jar).
+    implementation 'org.postgresql:postgresql:42.7.13'
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.18.2'
+
+    implementation 'org.slf4j:slf4j-api:2.0.19'
+    runtimeOnly 'org.slf4j:slf4j-simple:2.0.19'
+
+    testImplementation 'org.junit.jupiter:junit-jupiter:6.1.3'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+
+    testImplementation 'org.testcontainers:testcontainers:2.0.5'
+    testImplementation 'org.testcontainers:testcontainers-junit-jupiter:2.0.5'
+    testImplementation 'org.testcontainers:testcontainers-postgresql:2.0.5'
+}
+
+test {
+    useJUnitPlatform()
+    timeout = Duration.ofMinutes(12)
+    testLogging {
+        events = ['passed', 'skipped', 'failed']
+        exceptionFormat = 'full'
+    }
+}
+
+// --- Runnable experiments -------------------------------------------------
+// Defaults point at the reused WP-07 cluster (platform/kafka-cluster/)
+// plus WP-11's platform/kafka-connect/ (Connect worker + Postgres),
+// which this WP reuses as-is.
+
+def defaultBootstrap = 'localhost:9093,localhost:9094,localhost:9095'
+def defaultConnectUrl = 'http://localhost:8083'
+def defaultJdbcUrl = 'jdbc:postgresql://localhost:5432/inventory'
+
+tasks.register('runNaiveDualWrite', JavaExec) {
+    group = 'lab experiments'
+    description = 'The dual-write problem: a DB write and a Kafka publish as two independent operations. Use -PcrashAfterCommit=true to simulate a crash between them.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.outbox.naive.NaiveDualWriteApp'
+    systemProperty 'jdbcUrl', findProperty('jdbcUrl') ?: defaultJdbcUrl
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: defaultBootstrap
+    systemProperty 'orderId', findProperty('orderId') ?: 'O-NAIVE-1'
+    systemProperty 'customerId', findProperty('customerId') ?: 'C-1'
+    systemProperty 'amount', findProperty('amount') ?: '10.00'
+    systemProperty 'crashAfterCommit', findProperty('crashAfterCommit') ?: 'false'
+}
+
+tasks.register('runOutboxWriter', JavaExec) {
+    group = 'lab experiments'
+    description = 'The transactional outbox pattern: business row + outbox row committed together, in one transaction.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.outbox.outbox.OutboxWriterApp'
+    systemProperty 'jdbcUrl', findProperty('jdbcUrl') ?: defaultJdbcUrl
+    systemProperty 'orderId', findProperty('orderId') ?: 'O-OUTBOX-1'
+    systemProperty 'customerId', findProperty('customerId') ?: 'C-1'
+    systemProperty 'amount', findProperty('amount') ?: '10.00'
+    systemProperty 'aggregateType', findProperty('aggregateType') ?: 'Order'
+    systemProperty 'eventType', findProperty('eventType') ?: 'OrderCreated'
+    systemProperty 'failBeforeCommit', findProperty('failBeforeCommit') ?: 'false'
+}
+
+tasks.register('registerOutboxConnector', JavaExec) {
+    group = 'lab experiments'
+    description = 'Registers the real Debezium connector with the outbox Event Router SMT, capturing only outbox_event.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.outbox.outbox.OutboxConnectorRegistrationApp'
+    systemProperty 'connectUrl', findProperty('connectUrl') ?: defaultConnectUrl
+    systemProperty 'connectorName', findProperty('connectorName') ?: 'debezium-postgres-outbox'
+    systemProperty 'topicPrefix', findProperty('topicPrefix') ?: 'outboxcdc'
+    systemProperty 'slotName', findProperty('slotName') ?: 'debezium_outbox_slot'
+    systemProperty 'snapshotMode', findProperty('snapshotMode') ?: 'no_data'
+}
+
+tasks.register('runOutboxConsumer', JavaExec) {
+    group = 'lab experiments'
+    description = 'Consumes a routed outbox.event.<AggregateType> topic and decodes the EventRouter-unwrapped payload.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.outbox.outbox.OutboxEventConsumerApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: defaultBootstrap
+    systemProperty 'topic', findProperty('topic') ?: 'outbox.event.Order'
+    systemProperty 'runForMs', findProperty('runForMs') ?: '15000'
+}

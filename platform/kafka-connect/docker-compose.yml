@@ -56,6 +56,13 @@ services:
       - "max_replication_slots=20"
     volumes:
       - ./init-postgres.sql:/docker-entrypoint-initdb.d/init-postgres.sql:ro
+      # Added for WP-12 (transactional outbox) -- runs alongside
+      # init-postgres.sql on a FRESH volume only (docker-entrypoint-initdb.d
+      # scripts run once, at first container start against an empty data
+      # directory). If this container's volume was already initialized
+      # under WP-11 before WP-12 existed, run `docker compose down -v`
+      # first so both scripts execute.
+      - ./init-postgres-outbox.sql:/docker-entrypoint-initdb.d/init-postgres-outbox.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d inventory"]
       interval: 5s
