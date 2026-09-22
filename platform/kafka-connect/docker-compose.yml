@@ -1,0 +1,117 @@
+# Kafka Connect worker + PostgreSQL source database for WP-11 (Kafka
+# Connect & CDC).
+#
+# A SEPARATE compose project from platform/kafka-cluster/ (WP-07) and
+# platform/schema-registry/ (WP-10), on the SAME external
+# kafka-cluster_default network -- same pattern those two already
+# established: reuse the existing 3-broker cluster, add only the new
+# infrastructure this WP actually needs, keep each ecosystem component in
+# its own compose file so the repository layout itself shows what's
+# genuinely separate.
+#
+# Prerequisite: platform/kafka-cluster/ must already be running, and
+# ./fetch-debezium-plugin.sh must have been run at least once (see
+# README.md, "Setup") -- this file does not start Kafka itself and
+# expects platform/kafka-connect/plugins/debezium-connector-postgres/ to
+# already exist on disk before `docker compose up`.
+
+services:
+  postgres:
+    # Pinned to an explicit version, never `latest` -- verified pullable
+    # (`docker pull postgres:17.6`) before being pinned here.
+    image: postgres:17.6
+    container_name: connect-postgres
+    hostname: connect-postgres
+    networks:
+      - kafka-cluster_default
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: inventory
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    command:
+      # Debezium's PostgreSQL connector reads the write-ahead log via
+      # PostgreSQL's own native logical replication (the `pgoutput` plugin,
+      # built into PostgreSQL since 10 -- no extra decoder plugin needs
+      # installing, unlike older Debezium/Postgres tutorials that still
+      # reference wal2json or decoderbufs). `wal_level=logical` is the one
+      # setting that MUST be non-default for any of this to work at all --
+      # PostgreSQL's default `replica` WAL level does not retain the
+      # information logical decoding needs.
+      - "postgres"
+      - "-c"
+      - "wal_level=logical"
+      - "-c"
+      # Each Debezium connector holds ONE open WAL sender connection for
+      # as long as it stays registered -- a real, reproducible finding
+      # from this WP's own automated tests (see
+      # labs/lab-10-kafka-connect-cdc's KafkaConnectCluster): 4 was
+      # exhausted after registering a handful of connectors across
+      # manual experiments without deleting the earlier ones. Raised
+      # here to give a learner exploring multiple connectors the same
+      # headroom the test suite needed.
+      - "max_wal_senders=20"
+      - "-c"
+      - "max_replication_slots=20"
+    volumes:
+      - ./init-postgres.sql:/docker-entrypoint-initdb.d/init-postgres.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d inventory"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  connect-worker:
+    # Same image every other lab in this repository already uses for
+    # Kafka itself -- Kafka Connect is part of Apache Kafka's own
+    # distribution (bin/connect-distributed.sh, libs/connect-*.jar,
+    # confirmed present in this exact image), not a separate vendor
+    # product. Only the Debezium PostgreSQL connector plugin (fetched by
+    # fetch-debezium-plugin.sh, a separately-governed Commonhaus
+    # Foundation project -- see docs/references/REFERENCE_REPOSITORIES.md)
+    # is external to Apache Kafka; the WORKER running it is plain Kafka
+    # Connect.
+    image: apache/kafka:4.3.1
+    container_name: connect-worker
+    hostname: connect-worker
+    networks:
+      - kafka-cluster_default
+    ports:
+      - "8083:8083"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./config/connect-distributed.properties:/opt/kafka/config/connect-distributed.properties:ro
+      - ./plugins:/opt/kafka/connect-plugins:ro
+      # Read/write source and destination files for the Phase 1
+      # FileStream source/sink connector experiments -- mounted (not
+      # left inside the container's own writable layer) so the files
+      # this WP's manual experiments produce survive a container
+      # restart and are inspectable directly from the host.
+      - ./connect-data:/data
+    # Overrides the image's default broker-launch entrypoint
+    # (`/etc/kafka/docker/run`, which templates server.properties from
+    # KAFKA_* env vars -- built for running a BROKER, not a Connect
+    # worker) to run connect-distributed.sh directly against a real,
+    # hand-written worker properties file instead.
+    entrypoint: ["/opt/kafka/bin/connect-distributed.sh"]
+    command: ["/opt/kafka/config/connect-distributed.properties"]
+    healthcheck:
+      # Unlike confluentinc/cp-schema-registry (WP-10), this image does
+      # NOT bundle curl -- confirmed by `docker exec connect-worker which
+      # curl` returning nothing while the REST API itself was already
+      # answering real requests from the host. A bare bash /dev/tcp probe
+      # needs no extra tooling and is enough to confirm the REST listener
+      # is up; real content is verified separately (see the lab README).
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/8083' 2>/dev/null"]
+      interval: 5s
+      timeout: 10s
+      retries: 15
+      start_period: 30s
+
+networks:
+  kafka-cluster_default:
+    external: true
