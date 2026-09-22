@@ -14,6 +14,15 @@
 # dedicated topic). Three combined nodes happen to form a real 3-voter
 # controller quorum as a side effect, but that quorum's own failure modes
 # are not this lab's subject.
+#
+# Added for WP-16 (observability): each broker runs the real Prometheus
+# JMX exporter as a Java agent (KAFKA_OPTS -- confirmed real via
+# /opt/kafka/bin/kafka-run-class.sh, which passes KAFKA_OPTS straight
+# into the java command), exposing broker-side metrics on its own port
+# (7071/7072/7073) for platform/observability/'s Prometheus to scrape.
+# Run platform/kafka-cluster/jmx-exporter/fetch-jmx-exporter.sh once
+# before `docker compose up` -- purely additive: no existing listener,
+# node ID, or quorum-voter setting below changed at all.
 
 services:
   kafka-broker-1:
@@ -22,7 +31,12 @@ services:
     hostname: kafka-broker-1
     ports:
       - "9093:9092"
+      - "7071:7071"
+    volumes:
+      - kafka-broker-1-data:/var/lib/kafka/data
+      - ./jmx-exporter:/opt/kafka/jmx-exporter:ro
     environment:
+      KAFKA_OPTS: "-javaagent:/opt/kafka/jmx-exporter/jmx_prometheus_javaagent.jar=7071:/opt/kafka/jmx-exporter/kafka-broker.yml"
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: "broker,controller"
       KAFKA_LISTENERS: "CONTROLLER://:29093,PLAINTEXT_HOST://:9092,PLAINTEXT://:19092"
@@ -57,10 +71,23 @@ services:
       KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: 3
       KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: 2
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-    volumes:
-      - kafka-broker-1-data:/var/lib/kafka/data
+      # Lowered from Kafka's 5-minute default (WP-16) so this lab's
+      # short-retention data-loss experiment can observe real segment
+      # deletion within a bounded test timeout -- a lab-speed override,
+      # never appropriate in production (frequent retention checks add
+      # real broker CPU/IO overhead at scale).
+      KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS: 2000
     healthcheck:
-      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      # A real finding building the WP-16 JMX exporter above:
+      # kafka-run-class.sh (which kafka-broker-api-versions.sh, and
+      # every other Kafka CLI script, is built on) reads the SAME
+      # container-wide KAFKA_OPTS the broker process itself uses. With
+      # the broker already holding the exporter's HTTP port, a healthcheck
+      # invocation that inherits KAFKA_OPTS tries to bind that port a
+      # SECOND time and the CLI tool aborts outright
+      # (java.net.BindException, confirmed the hard way -- exit code 1).
+      # `KAFKA_OPTS=` clears it for JUST this one invocation.
+      test: ["CMD-SHELL", "KAFKA_OPTS= /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
       interval: 5s
       timeout: 10s
       retries: 10
@@ -72,7 +99,12 @@ services:
     hostname: kafka-broker-2
     ports:
       - "9094:9092"
+      - "7072:7072"
+    volumes:
+      - kafka-broker-2-data:/var/lib/kafka/data
+      - ./jmx-exporter:/opt/kafka/jmx-exporter:ro
     environment:
+      KAFKA_OPTS: "-javaagent:/opt/kafka/jmx-exporter/jmx_prometheus_javaagent.jar=7072:/opt/kafka/jmx-exporter/kafka-broker.yml"
       KAFKA_NODE_ID: 2
       KAFKA_PROCESS_ROLES: "broker,controller"
       KAFKA_LISTENERS: "CONTROLLER://:29093,PLAINTEXT_HOST://:9092,PLAINTEXT://:19092"
@@ -90,10 +122,14 @@ services:
       KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: 3
       KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: 2
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-    volumes:
-      - kafka-broker-2-data:/var/lib/kafka/data
+      # Lowered from Kafka's 5-minute default (WP-16) so this lab's
+      # short-retention data-loss experiment can observe real segment
+      # deletion within a bounded test timeout -- a lab-speed override,
+      # never appropriate in production (frequent retention checks add
+      # real broker CPU/IO overhead at scale).
+      KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS: 2000
     healthcheck:
-      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      test: ["CMD-SHELL", "KAFKA_OPTS= /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
       interval: 5s
       timeout: 10s
       retries: 10
@@ -105,7 +141,12 @@ services:
     hostname: kafka-broker-3
     ports:
       - "9095:9092"
+      - "7073:7073"
+    volumes:
+      - kafka-broker-3-data:/var/lib/kafka/data
+      - ./jmx-exporter:/opt/kafka/jmx-exporter:ro
     environment:
+      KAFKA_OPTS: "-javaagent:/opt/kafka/jmx-exporter/jmx_prometheus_javaagent.jar=7073:/opt/kafka/jmx-exporter/kafka-broker.yml"
       KAFKA_NODE_ID: 3
       KAFKA_PROCESS_ROLES: "broker,controller"
       KAFKA_LISTENERS: "CONTROLLER://:29093,PLAINTEXT_HOST://:9092,PLAINTEXT://:19092"
@@ -123,10 +164,14 @@ services:
       KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: 3
       KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: 2
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-    volumes:
-      - kafka-broker-3-data:/var/lib/kafka/data
+      # Lowered from Kafka's 5-minute default (WP-16) so this lab's
+      # short-retention data-loss experiment can observe real segment
+      # deletion within a bounded test timeout -- a lab-speed override,
+      # never appropriate in production (frequent retention checks add
+      # real broker CPU/IO overhead at scale).
+      KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS: 2000
     healthcheck:
-      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      test: ["CMD-SHELL", "KAFKA_OPTS= /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
       interval: 5s
       timeout: 10s
       retries: 10

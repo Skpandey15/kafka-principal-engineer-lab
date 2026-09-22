@@ -125,3 +125,15 @@ from a tutorial. Not a secret, but not meaningful to reuse outside this
 lab's own three containers, which is why every node's `CLUSTER_ID`
 value here must match exactly (it is what makes these three processes
 one cluster instead of three unrelated single-node ones).
+
+## Observability (WP-16)
+
+Each broker now also runs a real Prometheus JMX exporter Java agent
+(`jmx-exporter/`, `KAFKA_OPTS`), exposing broker-side metrics on
+7071/7072/7073 for `platform/observability/`'s Prometheus to scrape.
+Run `jmx-exporter/fetch-jmx-exporter.sh` once before `docker compose up`.
+Purely additive — no listener, node ID, or quorum setting above changed.
+See [`labs/lab-15-observability/README.md`](../../labs/lab-15-observability/README.md)
+and [`docs/observability/KAFKA_OBSERVABILITY.md`](../../docs/observability/KAFKA_OBSERVABILITY.md)
+for the full depth, including a real finding about why the healthcheck
+below needed `KAFKA_OPTS=` added to its own command.
