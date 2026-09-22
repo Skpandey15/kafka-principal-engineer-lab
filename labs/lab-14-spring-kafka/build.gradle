@@ -1,0 +1,65 @@
+// Lab 14 — Spring Kafka (WP-15).
+//
+// Same one-project-per-lab convention every prior lab uses. The FIRST
+// lab in this repository to use Spring Boot at all -- see the README
+// ("Why Spring Boot here and nowhere else") for why that's deliberate,
+// not an oversight in every prior lab.
+
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '4.1.1'
+    id 'io.spring.dependency-management' version '1.1.7'
+}
+
+group = 'com.kafkalab'
+version = '0.1.0'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter'
+    // Spring's own Kafka integration -- version managed by the Spring
+    // Boot 4.1.1 BOM (spring-kafka 4.1.x, itself built against Kafka
+    // client 4.2.1). Deliberately NOT pinned to this repo's broker
+    // version (apache/kafka:4.3.1, the image every other lab uses) --
+    // trusting the framework's own managed client version, exactly as
+    // a real Spring Boot application would, is itself part of what
+    // this lab demonstrates: Kafka's client/broker cross-version
+    // compatibility, verified for real by this lab's own tests passing
+    // against the pinned 4.3.1 broker despite the version gap.
+    implementation 'org.springframework.kafka:spring-kafka'
+    // A real Spring Boot 4.x finding: autoconfiguration for Kafka
+    // (KafkaAutoConfiguration, the class that registers the default
+    // KafkaTemplate/ConsumerFactory/ProducerFactory/listener-container-
+    // factory beans from spring.kafka.* properties) moved OUT of the
+    // monolithic spring-boot-autoconfigure jar into its OWN artifact,
+    // spring-boot-kafka, starting in Spring Boot 4.0 -- per-technology
+    // autoconfiguration modules, not one bundle-everything jar. Without
+    // this on the classpath, spring-kafka's classes are still usable
+    // (you can hand-wire every bean yourself), but NONE of the
+    // `spring.kafka.*` property-driven autoconfiguration happens --
+    // confirmed the hard way: a real `NoSuchBeanDefinitionException`
+    // for `KafkaTemplate` with spring-kafka alone on the classpath.
+    implementation 'org.springframework.boot:spring-boot-kafka'
+
+    implementation 'org.slf4j:slf4j-api'
+
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    // @EmbeddedKafka, KafkaTestUtils -- Spring Kafka's own first-class
+    // test support, the right tool for THIS WP specifically (testing
+    // framework behavior, not raw broker behavior) -- a third testing
+    // style in this repository, after Testcontainers (WP-02 onward)
+    // and TopologyTestDriver (WP-14).
+    testImplementation 'org.springframework.kafka:spring-kafka-test'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
