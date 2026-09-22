@@ -63,6 +63,12 @@ services:
       # under WP-11 before WP-12 existed, run `docker compose down -v`
       # first so both scripts execute.
       - ./init-postgres-outbox.sql:/docker-entrypoint-initdb.d/init-postgres-outbox.sql:ro
+      # Added for WP-13 (retry, DLQ & idempotency) -- this WP reuses
+      # ONLY this container's Postgres instance (no Connect worker, no
+      # Debezium involvement at all) for a real `processed_events`
+      # table with a UNIQUE constraint. Same "run once against an empty
+      # volume" caveat as the other init-postgres-*.sql files applies.
+      - ./init-postgres-idempotency.sql:/docker-entrypoint-initdb.d/init-postgres-idempotency.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d inventory"]
       interval: 5s
