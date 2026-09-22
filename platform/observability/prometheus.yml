@@ -1,0 +1,41 @@
+# Real Prometheus scrape configuration for WP-16 (observability).
+#
+# Two DIFFERENT sources of Kafka metrics, deliberately kept separate
+# rather than forced into one exporter:
+#
+# - The three brokers' own JMX exporter Java agents
+#   (platform/kafka-cluster/docker-compose.yml, confirmed real via
+#   `curl localhost:7071/metrics` -- broker-side metrics: throughput,
+#   under-replicated partitions, request-handler idle time, and
+#   everything the kafka-kraft-3_0_0.yml rule set maps).
+# - kafka-exporter (danielqsj/kafka-exporter), a SEPARATE, real,
+#   independently governed community project that computes consumer
+#   GROUP LAG the way `kafka-consumer-groups.sh --describe` does --
+#   by querying the Admin API directly, not by scraping any broker's
+#   JMX at all. Consumer lag is not a broker-side JMX metric; there is
+#   no MBean for "how far behind is consumer group X," because the
+#   broker doesn't track that -- only committed offsets vs. log-end
+#   offsets, which something has to actively compute.
+# A fast scrape interval (5s), deliberately -- appropriate ONLY for
+# this local, single-user learning environment where quick experiment
+# feedback matters more than scrape load. A real production Prometheus
+# deployment typically scrapes every 15-30s+ to keep broker and
+# Prometheus load reasonable at scale; see the lab README's "Production
+# considerations."
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: "kafka-brokers"
+    static_configs:
+      - targets:
+          - "kafka-broker-1:7071"
+          - "kafka-broker-2:7072"
+          - "kafka-broker-3:7073"
+        labels:
+          cluster: "wp07-3-broker-cluster"
+
+  - job_name: "kafka-consumer-lag"
+    static_configs:
+      - targets:
+          - "kafka-exporter:9308"

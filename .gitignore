@@ -89,3 +89,9 @@ platform/kafka-connect/plugins/*
 # running the lab's manual experiments, not committed source.
 platform/kafka-connect/connect-data/*
 !platform/kafka-connect/connect-data/.gitkeep
+
+# Downloaded Prometheus JMX exporter Java agent (WP-16) -- fetched by
+# platform/kafka-cluster/jmx-exporter/fetch-jmx-exporter.sh, a pinned
+# download, not committed source. The fetch script and its config ARE
+# committed.
+platform/kafka-cluster/jmx-exporter/jmx_prometheus_javaagent.jar

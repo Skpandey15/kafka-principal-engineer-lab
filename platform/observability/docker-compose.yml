@@ -1,0 +1,75 @@
+# Prometheus + Grafana + kafka-exporter for WP-16 (observability).
+#
+# A SEPARATE compose project from platform/kafka-cluster/ (WP-07), on
+# the SAME external kafka-cluster_default network -- same pattern
+# platform/kafka-connect/ (WP-11) and platform/schema-registry/ (WP-10)
+# already established: reuse the existing 3-broker cluster, add only
+# the new infrastructure this WP actually needs.
+#
+# Prerequisite: platform/kafka-cluster/ must already be running (with
+# its own JMX exporter agents attached -- see that compose file's own
+# comments) before `docker compose up` here.
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.14.0
+    container_name: observability-prometheus
+    hostname: observability-prometheus
+    networks:
+      - kafka-cluster_default
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/ready >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  kafka-exporter:
+    # A real, independently governed community project
+    # (github.com/danielqsj/kafka_exporter) -- NOT part of Apache Kafka
+    # or Confluent. Computes real consumer-group lag the same way
+    # `kafka-consumer-groups.sh --describe` does: by querying the
+    # Admin API directly (committed offsets vs. log-end offsets), not
+    # by reading any broker-side JMX MBean -- there isn't one for this.
+    image: danielqsj/kafka-exporter:v1.10.0
+    container_name: observability-kafka-exporter
+    hostname: observability-kafka-exporter
+    networks:
+      - kafka-cluster_default
+    ports:
+      - "9308:9308"
+    command:
+      - "--kafka.server=kafka-broker-1:19092"
+      - "--kafka.server=kafka-broker-2:19092"
+      - "--kafka.server=kafka-broker-3:19092"
+
+  grafana:
+    image: grafana/grafana:13.2.2
+    container_name: observability-grafana
+    hostname: observability-grafana
+    networks:
+      - kafka-cluster_default
+    ports:
+      - "3000:3000"
+    environment:
+      # Anonymous admin access -- appropriate ONLY for this local,
+      # single-user learning environment, exactly like every prior
+      # platform/ directory's own PLAINTEXT-only security note. A real
+      # deployment would need real authentication; see the lab README's
+      # "Production considerations."
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+
+networks:
+  kafka-cluster_default:
+    external: true

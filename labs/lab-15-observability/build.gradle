@@ -1,0 +1,60 @@
+// Lab 15 — Observability & Troubleshooting (WP-16).
+//
+// Same one-project-per-lab convention every prior lab uses.
+//
+// A DELIBERATE departure from every prior lab's Testcontainers-first
+// test strategy: this WP is fundamentally about REAL infrastructure --
+// JMX exporters, Prometheus, Grafana -- not client-library behavior.
+// Spinning up Prometheus/Grafana fresh via Testcontainers for every
+// test run would add real complexity for little pedagogical value,
+// when the whole point is exercising the SAME manual, persistent
+// observability stack a real operator would actually run and look at.
+// This lab's tests are real integration tests against the ALREADY-RUNNING
+// platform/kafka-cluster/ + platform/observability/ environments -- see
+// the README's "Prerequisites" and "Why not Testcontainers here."
+
+import java.time.Duration
+
+plugins {
+    id 'java'
+}
+
+group = 'com.kafkalab'
+version = '0.1.0'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'org.apache.kafka:kafka-clients:4.3.1'
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.18.2'
+
+    implementation 'org.slf4j:slf4j-api:2.0.19'
+    runtimeOnly 'org.slf4j:slf4j-simple:2.0.19'
+
+    testImplementation 'org.junit.jupiter:junit-jupiter:6.1.3'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+test {
+    useJUnitPlatform()
+    timeout = Duration.ofMinutes(10)
+    testLogging {
+        events = ['passed', 'skipped', 'failed']
+        exceptionFormat = 'full'
+    }
+}
+
+def defaultBootstrap = 'localhost:9093,localhost:9094,localhost:9095'
+def defaultPrometheusUrl = 'http://localhost:9090'
+
+tasks.withType(Test).configureEach {
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: defaultBootstrap
+    systemProperty 'prometheusUrl', findProperty('prometheusUrl') ?: defaultPrometheusUrl
+}
