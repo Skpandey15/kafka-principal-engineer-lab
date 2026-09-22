@@ -1,0 +1,125 @@
+// Lab 10 — Kafka Connect & CDC (WP-11).
+//
+// Same one-project-per-lab convention every prior lab uses.
+
+import java.time.Duration
+
+plugins {
+    id 'java'
+}
+
+group = 'com.kafkalab'
+version = '0.1.0'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'org.apache.kafka:kafka-clients:4.3.1'
+    // The REAL way to decode a Connect JSON-with-schema envelope (Struct/
+    // Schema, not hand-rolled JSON field access) -- these are separate
+    // artifacts from kafka-clients (confirmed: connect-json-4.3.1.jar is
+    // NOT on connect-distributed.sh's classpath by inclusion of
+    // kafka-clients alone; see platform/kafka-connect/fetch-plugins.sh's
+    // own connect-file finding for the same worker, a related but
+    // distinct discovery). Used here specifically to correctly resolve
+    // Debezium's Base64-encoded `org.apache.kafka.connect.data.Decimal`
+    // logical type back into a real BigDecimal, rather than parsing that
+    // encoding by hand.
+    implementation 'org.apache.kafka:connect-api:4.3.1'
+    implementation 'org.apache.kafka:connect-json:4.3.1'
+    // Same driver version the Debezium PostgreSQL connector plugin
+    // bundles (platform/kafka-connect/plugins/debezium-connector-postgres/
+    // postgresql-42.7.13.jar) -- matched deliberately so this lab's own
+    // JDBC seeding app talks to Postgres via the exact same driver
+    // version Debezium itself uses.
+    implementation 'org.postgresql:postgresql:42.7.13'
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.18.2'
+
+    implementation 'org.slf4j:slf4j-api:2.0.19'
+    runtimeOnly 'org.slf4j:slf4j-simple:2.0.19'
+
+    testImplementation 'org.junit.jupiter:junit-jupiter:6.1.3'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+
+    testImplementation 'org.testcontainers:testcontainers:2.0.5'
+    testImplementation 'org.testcontainers:testcontainers-junit-jupiter:2.0.5'
+    // Module artifact IDs changed under Testcontainers' 2.x line --
+    // `testcontainers-postgresql`, not the 1.x-era `postgresql` -- see
+    // the lab README, "A real Testcontainers module-naming finding."
+    testImplementation 'org.testcontainers:testcontainers-postgresql:2.0.5'
+}
+
+test {
+    useJUnitPlatform()
+    timeout = Duration.ofMinutes(12)
+    testLogging {
+        events = ['passed', 'skipped', 'failed']
+        exceptionFormat = 'full'
+    }
+}
+
+// --- Runnable experiments -------------------------------------------------
+// Default bootstrap servers/URLs point at the reused WP-07 cluster
+// (platform/kafka-cluster/) plus this WP's added platform/kafka-connect/
+// (Connect worker + Postgres).
+
+def defaultBootstrap = 'localhost:9093,localhost:9094,localhost:9095'
+def defaultConnectUrl = 'http://localhost:8083'
+def defaultJdbcUrl = 'jdbc:postgresql://localhost:5432/inventory'
+
+tasks.register('runFileStreamDemo', JavaExec) {
+    group = 'lab experiments'
+    description = 'Phase 1 (Sections 1-4): registers real FileStream source + sink connectors, demonstrating the worker/task/offset model with pure Apache Kafka Connect.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.connectcdc.connect.FileStreamDemoApp'
+    systemProperty 'connectUrl', findProperty('connectUrl') ?: defaultConnectUrl
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: defaultBootstrap
+}
+
+tasks.register('inspectConnectOffsets', JavaExec) {
+    group = 'lab experiments'
+    description = 'Section 4: dump the real connect-offsets topic contents, showing a source connector\'s own offset representation.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.connectcdc.connect.ConnectOffsetsInspectorApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: defaultBootstrap
+}
+
+tasks.register('registerDebeziumConnector', JavaExec) {
+    group = 'lab experiments'
+    description = 'Phase 2 (Sections 5+): registers the real Debezium PostgreSQL connector against the reused environment.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.connectcdc.cdc.DebeziumConnectorRegistrationApp'
+    systemProperty 'connectUrl', findProperty('connectUrl') ?: defaultConnectUrl
+    systemProperty 'connectorName', findProperty('connectorName') ?: 'debezium-postgres-orders'
+    systemProperty 'topicPrefix', findProperty('topicPrefix') ?: 'cdc'
+    systemProperty 'slotName', findProperty('slotName') ?: 'debezium_orders_slot'
+}
+
+tasks.register('seedOrders', JavaExec) {
+    group = 'lab experiments'
+    description = 'Insert/update/delete rows in the orders table via plain JDBC, to drive real CDC events.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.connectcdc.cdc.OrdersJdbcSeedApp'
+    systemProperty 'jdbcUrl', findProperty('jdbcUrl') ?: defaultJdbcUrl
+    systemProperty 'action', findProperty('action') ?: 'insert'
+    systemProperty 'orderId', findProperty('orderId') ?: 'O-DEMO-1'
+    systemProperty 'customerId', findProperty('customerId') ?: 'C-1'
+    systemProperty 'amount', findProperty('amount') ?: '10.00'
+}
+
+tasks.register('runCdcConsumer', JavaExec) {
+    group = 'lab experiments'
+    description = 'Consumes cdc.public.orders, decoding Debezium\'s real envelope (op/before/after/source) into readable output.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.connectcdc.cdc.CdcEventConsumerApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: defaultBootstrap
+    systemProperty 'topic', findProperty('topic') ?: 'cdc.public.orders'
+    systemProperty 'runForMs', findProperty('runForMs') ?: '15000'
+}

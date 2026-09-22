@@ -149,9 +149,9 @@ asked.
 |---|---|
 | Repository | [debezium/debezium](https://github.com/debezium/debezium) |
 | Authority | Commonhaus Foundation (vendor-neutral governance since December 2024; Red Hat remains an active contributor, but the project is no longer solely Red-Hat-governed) |
-| Why we reference it | Reference for `labs/lab-15-debezium-cdc` and the CDC material in `docs/kafka-connect/` — connector configuration, WAL-based logical decoding for PostgreSQL, and how Debezium's connectors run inside Kafka Connect's distributed-mode worker model. |
+| Why we reference it | Reference for `labs/lab-10-kafka-connect-cdc` and the CDC material in `docs/kafka-connect/` — connector configuration, WAL-based logical decoding for PostgreSQL, and how Debezium's connectors run inside Kafka Connect's distributed-mode worker model. |
 | Concepts learned | Source connector configuration, PostgreSQL logical decoding / WAL concepts, Debezium's event envelope format, snapshotting vs. streaming, and connector-level failure/restart/recovery behavior. |
-| Target WP(s) | WP-11 (`lab-15-debezium-cdc`), and foundational to WP-12's transactional outbox (which is CDC-based in this repository's design) and the future idempotent-consumer topic that follows it. |
+| Target WP(s) | WP-11 (`lab-10-kafka-connect-cdc`), and foundational to WP-12's transactional outbox (which is CDC-based in this repository's design) and the future idempotent-consumer topic that follows it. |
 | Source-reading target | Less about reading Java internals and more about reading connector configuration reference docs and the PostgreSQL connector's own documentation of what it captures and how. |
 | What NOT to copy | Do not treat CDC as a substitute for understanding Kafka Connect's own worker/task/offset model first — within WP-11 (Kafka Connect & CDC), plain Kafka Connect fundamentals are sequenced before Debezium-specific CDC for that reason, as two phases of the same work package rather than two separate ones. |
 | KRaft relevance | Current — Debezium is a Kafka Connect connector; it has no ZooKeeper dependency of its own and runs against any KRaft cluster. |
