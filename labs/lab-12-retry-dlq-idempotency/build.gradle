@@ -1,0 +1,79 @@
+// Lab 12 — Retry, DLQ & Idempotency (WP-13).
+//
+// Same one-project-per-lab convention every prior lab uses.
+
+import java.time.Duration
+
+plugins {
+    id 'java'
+}
+
+group = 'com.kafkalab'
+version = '0.1.0'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'org.apache.kafka:kafka-clients:4.3.1'
+    implementation 'org.postgresql:postgresql:42.7.13'
+
+    implementation 'org.slf4j:slf4j-api:2.0.19'
+    runtimeOnly 'org.slf4j:slf4j-simple:2.0.19'
+
+    testImplementation 'org.junit.jupiter:junit-jupiter:6.1.3'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+
+    testImplementation 'org.testcontainers:testcontainers:2.0.5'
+    testImplementation 'org.testcontainers:testcontainers-junit-jupiter:2.0.5'
+    testImplementation 'org.testcontainers:testcontainers-postgresql:2.0.5'
+}
+
+test {
+    useJUnitPlatform()
+    timeout = Duration.ofMinutes(10)
+    testLogging {
+        events = ['passed', 'skipped', 'failed']
+        exceptionFormat = 'full'
+    }
+}
+
+// --- Runnable experiments -------------------------------------------------
+// Defaults point at the reused WP-07 cluster (platform/kafka-cluster/)
+// plus WP-11's platform/kafka-connect/ Postgres container (reused here
+// purely for its Postgres instance -- no Connect worker involved).
+
+def defaultBootstrap = 'localhost:9093,localhost:9094,localhost:9095'
+def defaultJdbcUrl = 'jdbc:postgresql://localhost:5432/inventory'
+
+tasks.register('produceOrderEvent', JavaExec) {
+    group = 'lab experiments'
+    description = 'Produces one record to the input topic. -Ppoison=true sends malformed wire-format text.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.retrydlq.producer.OrderEventProducerApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: defaultBootstrap
+    systemProperty 'topic', findProperty('topic') ?: 'retry-dlq-orders'
+    systemProperty 'eventId', findProperty('eventId') ?: 'ORDER-1'
+    systemProperty 'customerId', findProperty('customerId') ?: 'C-1'
+    systemProperty 'amount', findProperty('amount') ?: '10.00'
+    systemProperty 'poison', findProperty('poison') ?: 'false'
+}
+
+tasks.register('runRetryDlqConsumer', JavaExec) {
+    group = 'lab experiments'
+    description = 'Real consumer: claim/retry/complete-or-DLQ for every record, always committing the offset.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.retrydlq.consumer.RetryDlqConsumerApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: defaultBootstrap
+    systemProperty 'jdbcUrl', findProperty('jdbcUrl') ?: defaultJdbcUrl
+    systemProperty 'topic', findProperty('topic') ?: 'retry-dlq-orders'
+    systemProperty 'groupId', findProperty('groupId') ?: 'retry-dlq-consumer'
+    systemProperty 'maxAttempts', findProperty('maxAttempts') ?: '3'
+    systemProperty 'runForMs', findProperty('runForMs') ?: '20000'
+}
