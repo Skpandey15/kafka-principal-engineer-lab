@@ -1,0 +1,61 @@
+// Lab 17 — Security (WP-18).
+//
+// Same one-project-per-lab convention every prior lab uses.
+//
+// A deliberate departure from most prior labs' Testcontainers-first
+// strategy (the SAME departure WP-16 made, for the same reason): this
+// WP's subject is a real, persistent, non-trivial-to-provision security
+// setup (a self-signed CA, a CA-signed broker cert with real SANs, real
+// SCRAM users bootstrapped at storage-format time). Tests run against
+// the ALREADY-RUNNING platform/kafka-security/ environment -- see the
+// lab README, "Why not Testcontainers here."
+
+import java.time.Duration
+
+plugins {
+    id 'java'
+}
+
+group = 'com.kafkalab'
+version = '0.1.0'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'org.apache.kafka:kafka-clients:4.3.1'
+
+    implementation 'org.slf4j:slf4j-api:2.0.19'
+    runtimeOnly 'org.slf4j:slf4j-simple:2.0.19'
+
+    testImplementation 'org.junit.jupiter:junit-jupiter:6.1.3'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+test {
+    useJUnitPlatform()
+    timeout = Duration.ofMinutes(10)
+    testLogging {
+        events = ['passed', 'skipped', 'failed']
+        exceptionFormat = 'full'
+    }
+}
+
+def defaultBootstrap = 'localhost:9096'
+
+tasks.register('runSecurityDemo', JavaExec) {
+    group = 'lab experiments'
+    description = 'Produces one record as -Pusername= (default admin) over the real SASL_SSL listener.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.kafkalab.security.acl.SecurityDemoApp'
+    systemProperty 'bootstrapServers', findProperty('bootstrapServers') ?: defaultBootstrap
+    systemProperty 'username', findProperty('username') ?: 'admin'
+    systemProperty 'password', findProperty('password') ?: 'admin-secret'
+    systemProperty 'topic', findProperty('topic') ?: 'security-demo'
+}

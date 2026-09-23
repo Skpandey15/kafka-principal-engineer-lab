@@ -95,3 +95,17 @@ platform/kafka-connect/connect-data/*
 # download, not committed source. The fetch script and its config ARE
 # committed.
 platform/kafka-cluster/jmx-exporter/jmx_prometheus_javaagent.jar
+
+# Generated CA/broker TLS material (WP-18) -- produced by
+# platform/kafka-security/certs/generate-certs.sh, a real, freshly
+# generated self-signed CA and signed broker cert every time the
+# script runs, not committed source. The generation script and the
+# static client-config templates (admin-client.properties,
+# reader-client.properties) ARE committed.
+platform/kafka-security/certs/*.p12
+platform/kafka-security/certs/*.crt
+platform/kafka-security/certs/*.key
+platform/kafka-security/certs/*.csr
+platform/kafka-security/certs/*.srl
+platform/kafka-security/certs/*.ext
+platform/kafka-security/certs/store-password.txt

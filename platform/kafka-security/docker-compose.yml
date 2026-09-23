@@ -1,0 +1,42 @@
+# A real, single-node KRaft Kafka broker with SASL_SSL (SCRAM-SHA-512
+# + TLS) client authentication/encryption and real StandardAuthorizer
+# ACL enforcement, for WP-18 (security).
+#
+# SEPARATE from every other platform/ environment -- own network, own
+# volume, own host port (9096, clear of every prior WP's 9092-9095).
+# Single-node, deliberately -- see platform/kafka-security/README.md,
+# "Why single-node here": security mechanics (TLS handshake, SASL
+# auth, ACL enforcement) don't need multi-broker replication to
+# demonstrate, and a single cert/keystore keeps the setup dramatically
+# simpler than securing inter-broker replication traffic too.
+#
+# Prerequisite: certs/generate-certs.sh must be run once before
+# `docker compose up` -- see that script's own comments for why it
+# generates a real, LOCAL-DEVELOPMENT-ONLY self-signed CA.
+
+services:
+  security-broker:
+    image: apache/kafka:4.3.1
+    container_name: security-broker
+    hostname: security-broker
+    ports:
+      - "9096:9094"
+    volumes:
+      - security-broker-data:/var/lib/kafka/data
+      - ./config/server.properties:/opt/kafka/config/server.properties:ro
+      - ./entrypoint.sh:/opt/kafka/entrypoint.sh:ro
+      - ./certs:/etc/kafka/secrets:ro
+    entrypoint: ["bash", "/opt/kafka/entrypoint.sh"]
+    healthcheck:
+      # A real, authenticated healthcheck -- kafka-broker-api-versions.sh
+      # itself needs a real SASL_SSL client config to reach a broker
+      # that no longer accepts PLAINTEXT client connections at all.
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9093 --command-config /etc/kafka/secrets/admin-client.properties >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+volumes:
+  security-broker-data:
+    name: kafka-principal-engineer-lab_security-broker-data
