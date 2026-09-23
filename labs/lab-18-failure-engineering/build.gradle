@@ -1,0 +1,51 @@
+// Lab 18 — Failure Engineering & Production Simulation (WP-19).
+//
+// Same one-project-per-lab convention every prior lab uses. Implements
+// the ONE failure-matrix row explicitly assigned to this WP (disk
+// pressure, simulated safely) plus a production-simulation scenario
+// that combines multiple PREVIOUSLY-SEPARATE failure mechanics
+// (broker failure, consumer rebalance) into ONE running system --
+// every other individual failure this WP's own roadmap line names
+// (broker/consumer failures, rebalances, lag spikes, partition skew)
+// is already independently demonstrated in an earlier WP; see the
+// conceptual doc, Section 1, for the real scoping reasoning.
+
+import java.time.Duration
+
+plugins {
+    id 'java'
+}
+
+group = 'com.kafkalab'
+version = '0.1.0'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'org.apache.kafka:kafka-clients:4.3.1'
+
+    implementation 'org.slf4j:slf4j-api:2.0.19'
+    runtimeOnly 'org.slf4j:slf4j-simple:2.0.19'
+
+    testImplementation 'org.junit.jupiter:junit-jupiter:6.1.3'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+
+    testImplementation 'org.testcontainers:testcontainers:2.0.5'
+    testImplementation 'org.testcontainers:testcontainers-junit-jupiter:2.0.5'
+}
+
+test {
+    useJUnitPlatform()
+    timeout = Duration.ofMinutes(15)
+    testLogging {
+        events = ['passed', 'skipped', 'failed']
+        exceptionFormat = 'full'
+    }
+}
