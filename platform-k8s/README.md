@@ -65,6 +65,7 @@ export KUBECONFIG=~/.kube/config-kafka-lab.yaml
 | `observability/` | `platform/observability/` | lab-15 (needs `kafka-cluster/` applied first) |
 | `kafka-security/` | `platform/kafka-security/` | lab-17 (standalone) |
 | `multi-cluster-dr/` | lab-19's own `TwoClusterEnvironment` (no docker-compose counterpart) | lab-19 (standalone) |
+| `kafka-ui/` | `platform/kafka-ui/` | optional, secondary tooling (needs `kafka-cluster/`; `schema-registry/` optional) |
 
 Each environment directory has:
 
