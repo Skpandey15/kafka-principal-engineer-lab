@@ -1,5 +1,13 @@
 # Lab 14 — Spring Kafka
 
+## Quick Summary
+
+- **Why this lab:** To map Spring Kafka's production abstractions — listener containers, acknowledgment modes, error handling with dead-letter publishing, non-blocking retry topics, declarative transactions — onto the exact native Kafka mechanisms every prior lab already built by hand, per `CONTRIBUTING.md` §18's rule against hiding Kafka behavior behind a framework.
+- **How to run:** `./gradlew bootRun` against `platform/kafka-cluster/` for a manual run of all listeners; `./gradlew test` runs the 4-test suite against `@EmbeddedKafka` (a real, in-process broker) and needs no Docker at all.
+- **Expected input:** JDK 21+; Docker only if you want the manual `bootRun` path — the automated tests are fully self-contained.
+- **Expected output:** A manually-acknowledged listener whose unacknowledged records are never committed; a permanently-failing record retried then routed to a real dead-letter topic with real (wrapped) exception headers; a record traversing every configured non-blocking retry topic before reaching its DLT handler; a rolled-back transactional send that's invisible under `read_committed`.
+- **What we learned:** Two genuine Spring Boot 4.x surprises: Kafka autoconfiguration moved into its own required artifact (`spring-boot-kafka`), not bundled where you'd expect; and defining *any* custom `KafkaTemplate` bean silently suppresses Spring Boot's own autoconfigured default entirely (it matches by raw type, ignoring generics). Setting `spring.kafka.producer.transaction-id-prefix` globally breaks every non-transactional send in the app — build a separate, dedicated transactional template instead. This lab's real DLT topic suffix, exception headers, and binary-encoded offset/partition headers independently validated WP-13's own hand-modeled header convention.
+
 ## Objective
 
 Map Spring Kafka's production abstractions onto the native Kafka

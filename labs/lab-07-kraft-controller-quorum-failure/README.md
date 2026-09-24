@@ -1,5 +1,13 @@
 # Lab 07 — KRaft Controller Quorum & Failure
 
+## Quick Summary
+
+- **Why this lab:** To prove, against a real dedicated-role KRaft cluster (separate controllers and brokers), that the control plane and data plane are genuinely independent failure domains — and where that independence stops holding.
+- **How to run:** Start `platform/kraft-quorum/` (3 dedicated controllers + 3 dedicated brokers), create the lab topic, then `docker kill` individual controller containers (one, then two of three) while running `runContinuousProducer`/`runContinuousConsumer`, and inspect quorum state with `./gradlew describeQuorum`; `./gradlew test` for the isolated Testcontainers suite.
+- **Expected input:** Docker, JDK 21+; real controller kills via `docker kill kafka-controller-N`.
+- **Expected output:** A new controller leader elected within ~6s of a kill; ordinary produce/consume traffic showing zero interruption across a controller kill; metadata mutations (create/alter/delete) succeeding with 2/3 controllers but failing/timing out with only 1/3 — while `--list` still works even then.
+- **What we learned:** One controller failure is not a control-plane outage as long as majority (2 of 3) remains — ordinary data-plane traffic is completely indifferent to controller failure, as long as no partition leader also changes. But "existing traffic continues" during total quorum loss does *not* mean the cluster can react to a *new* failure: electing a new partition leader is itself a metadata mutation, so a broker dying while quorum is unavailable produces a sustained, non-self-healing outage for that partition until quorum returns — the exact seam connecting WP-07 (replication) and WP-08 (KRaft quorum).
+
 ## Objective
 
 This lab answers, with real, captured, timestamped evidence, against a

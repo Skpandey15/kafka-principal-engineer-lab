@@ -1,5 +1,13 @@
 # Lab 10 — Kafka Connect & CDC
 
+## Quick Summary
+
+- **Why this lab:** To show how Kafka Connect moves data in and out of Kafka without hand-written glue code (pure Apache Kafka, the FileStream connectors), then how database changes become a real, reliable event stream via Debezium's real PostgreSQL CDC connector.
+- **How to run:** Start `platform/kafka-cluster/` plus `platform/kafka-connect/` (`bash fetch-plugins.sh` first), then `runFileStreamDemo` → `inspectConnectOffsets` → `registerDebeziumConnector` → `seedOrders -Paction=insert|update|delete` → `runCdcConsumer`; `./gradlew test` for the 9-test suite.
+- **Expected input:** Docker, JDK 21+; a real PostgreSQL instance configured for logical replication (`wal_level=logical`) and a Connect worker running `apache/kafka:4.3.1`'s own `connect-distributed.sh`.
+- **Expected output:** A FileStream source→sink round trip moving data purely through Kafka; real Debezium envelopes (`op`/`before`/`after`/`source`) for insert, update, and delete, including a post-delete tombstone; a Connect task surviving and resuming from its exact WAL position after a source-database outage.
+- **What we learned:** A Kafka Connect source connector's own offset is whatever that connector's plugin defines (a byte file position for FileStream, a WAL LSN for Debezium) — not a Kafka offset. Deleting a connector does NOT clear its stored offsets, so recreating one with the same name resumes rather than restarts. `REPLICA IDENTITY FULL` is what makes an `after`-only update also carry a full `before` image. If the source database's WAL retention is exceeded during an outage, CDC can lose the ability to resume cleanly and may need a fresh snapshot — monitor replication-slot lag as the leading indicator, not just "is the connector RUNNING."
+
 ## Objective
 
 Build a hands-on progression through Kafka Connect's worker/task/offset

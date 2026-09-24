@@ -1,5 +1,13 @@
 # Lab 03 — Partitioning & Ordering Engineering
 
+## Quick Summary
+
+- **Why this lab:** To turn "how many partitions should I create?" into an architecture question — what must be ordered together, what's the key's real traffic distribution, what parallelism is required, and what happens when the topology changes later.
+- **How to run:** Start `platform/kafka/`, create the four lab topics (varying partition counts), then run the distribution experiments (`runGoodCardinalityDistribution`, `runNullKeyDistribution`, `runLowCardinalityDistribution`, `runHotKeyDistribution`), the mandatory partition-count-change experiment (`runPartitionMappingBefore`/`--alter --partitions 6`/`runPartitionMappingAfter`), and `./gradlew test`.
+- **Expected input:** A running WP-02 cluster, JDK 21+; most experiments accept `-Pcount` (records to send) and default topic names, overridable via `-Ptopic`.
+- **Expected output:** A real per-partition distribution report (records/percentage/max-avg ratio) for each key strategy; a measured, checkable remapping table after a partition-count change; a consumer-parallelism demo where extra consumers sit provably idle.
+- **What we learned:** Kafka only orders within a partition — never across a whole topic. Good-cardinality keys distribute close to evenly (max/avg ≈1.02); null keys stick to one partition per batch (KIP-794), not round-robin; low-cardinality keys leave most partitions empty no matter how many you provision; a single hot key can put 91% of traffic on one partition on an otherwise healthy cluster. Increasing partition count changes where *future* records for a key land (verified via `murmur2(key) % N`) but never moves already-written data — partition count is capacity-planned state, not a free-to-flip autoscaling knob.
+
 ## Objective
 
 This lab answers, and gives you personal, measured evidence for:

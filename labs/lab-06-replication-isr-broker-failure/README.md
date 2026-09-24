@@ -1,5 +1,13 @@
 # Lab 06 — Replication, ISR & Broker Failure
 
+## Quick Summary
+
+- **Why this lab:** To prove, against a real 3-node KRaft cluster, exactly what happens to a partition when its leader dies, and how replication factor, ISR, `acks`, and `min.insync.replicas` actually interact — not as separate settings but as one durability/availability trade-off.
+- **How to run:** Start `platform/kafka-cluster/` (3 brokers), create the four lab topics (varying RF and `min.insync.replicas`), then `docker kill`/`docker start` individual broker containers while `./gradlew runContinuousProducer`/`runContinuousConsumer` are running; `./gradlew test` for the isolated Testcontainers 3-broker suite.
+- **Expected input:** Docker, JDK 21+; real broker kills via `docker kill kafka-broker-N`, not simulated failures.
+- **Expected output:** A new leader elected within seconds of a kill, with `Replicas` unchanged but `Isr` shrinking then re-expanding; RF=1's sole replica dying leaves the partition leaderless; RF=2 survives a leader kill with clean failover; `acks=all` writes succeeding exactly down to `min.insync.replicas` and failing below it.
+- **What we learned:** `Replicas` is fixed at creation and doesn't change when a broker dies — `ISR` is the subset actually trusted for `acks=all`, and it changes continuously. `acks=all` is enforced against `min.insync.replicas`, never against replication factor itself. A recovering broker rejoining ISR does not automatically reclaim partition leadership — those are two separate events. In a combined broker+controller topology, crossing `min.insync.replicas` can also break controller-quorum majority — a real structural coupling this lab's own build surfaced, not a documented Kafka guarantee to assume elsewhere.
+
 ## Objective
 
 This lab answers, with real, captured, timestamped evidence, against a

@@ -1,5 +1,13 @@
 # Lab 02 — Native Java Producer & Consumer Fundamentals
 
+## Quick Summary
+
+- **Why this lab:** The transition from Kafka CLI user to Java Kafka client developer — the native `kafka-clients` library only, no Spring, no frameworks, so you feel what a poll loop, a callback, and a commit actually require before any abstraction wraps them.
+- **How to run:** Start `platform/kafka/`, create a 3-partition topic (`orders-java`), then `./gradlew runProducerBasic`, `runProducerKeyAffinity`, `runProducerNullKey`, `runProducerExplicitPartition`, and `runConsumer` (with `-PgroupId`/`-PclientId`), plus `./gradlew test` for the Testcontainers suite.
+- **Expected input:** A running WP-02 cluster and JDK 21+; each Gradle task accepts `-PbootstrapServers`, `-Ptopic`, `-Pkey`, `-Pcount`, `-PgroupId`, `-PclientId` overrides.
+- **Expected output:** Producer callbacks reporting real `(topic, partition, offset)`; same-key records landing on the same partition every time; consumer-group ownership splitting cleanly across multiple instances; a passing Testcontainers integration test proving producer→broker→consumer end to end.
+- **What we learned:** `send()` returning tells you nothing about durability — only the callback does. Null-key distribution is sticky-batch, not round-robin, and must never be assumed. Consumer *position* (in-memory) and *committed offset* (durable, per-group) are different things; only the committed offset survives a restart. A broker outage's exact failure mode depends on which of several independent client-side timeouts (delivery vs. metadata) it happens to hit first — never generalize from one run.
+
 ## Objective
 
 This is the transition from Kafka CLI user to Java Kafka client developer.

@@ -1,5 +1,13 @@
 # Lab 11 — Transactional Outbox
 
+## Quick Summary
+
+- **Why this lab:** To demonstrate the dual-write problem directly (a real business commit with zero corresponding Kafka events), then fix it with the transactional outbox pattern built on WP-11's own CDC pipeline and Debezium's real `EventRouter` transform — not a hand-rolled dual-write workaround.
+- **How to run:** Reuse `platform/kafka-cluster/` and `platform/kafka-connect/` (adding one new SQL init script for the outbox tables — `docker compose down -v` first if the Postgres volume predates this WP), then `runNaiveDualWrite -PcrashAfterCommit=true` → `runOutboxWriter` → `registerOutboxConnector` → `runOutboxConsumer`; `./gradlew test` for the 6-test suite.
+- **Expected input:** Docker, JDK 21+, WP-11 completed; a business table (`outbox_demo_orders`, never captured by CDC) and a dedicated outbox table (`outbox_event`, the only thing Debezium reads).
+- **Expected output:** A naive dual-write leaving a committed business row with no matching Kafka event; the outbox pattern producing a business row and its outbox row atomically in one transaction, routed by Debezium to a topic named from `aggregatetype`.
+- **What we learned:** `OutboxWriterApp` never imports `KafkaProducer` at all — publishing is entirely Debezium's responsibility, which is the actual point: the application only ever writes to Postgres, atomically, and CDC does the rest. A real finding from this lab's own test suite: PostgreSQL's `jsonb` column type re-serializes output with a space after `:`/`,`, breaking exact-substring assertions — parse as JSON and compare fields, never compare raw payload substrings.
+
 ## Objective
 
 Demonstrate the dual-write problem directly, then fix it with the

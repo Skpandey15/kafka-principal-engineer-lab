@@ -1,5 +1,13 @@
 # Lab 16 — Performance & Capacity Engineering
 
+## Quick Summary
+
+- **Why this lab:** To measure batching and compression's real effect on producer throughput with a hand-built benchmark (never a wrapped `kafka-producer-perf-test.sh` call), and turn that MEASURED throughput into a worked capacity workbook — tuning and sizing taught together, never as separate tracks or invented numbers.
+- **How to run:** Start `platform/kafka-cluster/` for manual runs, then `./gradlew runBenchmark -Pprofile=unbatched|batched|batched-lz4`; `./gradlew test` for the 7-test suite (3 pure-arithmetic `CapacityCalculator` unit tests, 4 real Testcontainers integration tests).
+- **Expected input:** Docker (for manual benchmark runs and the integration tests), JDK 21+.
+- **Expected output:** Real records/sec, MB/sec, and p50/p95/p99 latency numbers comparing unbatched vs. batched production; a real, measured `compression-rate-avg` for LZ4; partition count proven as a real ceiling on consumer parallelism; `fetch.min.bytes`/`fetch.max.wait.ms` trading latency for fewer, larger fetches.
+- **What we learned:** Every throughput/latency claim in this lab compares two real measurements taken moments apart on the *same* hardware against each other — never against a fixed absolute number, since an absolute figure would be environment-dependent and flaky (and this repository's own rule against invented benchmark numbers forbids publishing one anyway). The `CapacityCalculator` takes a measured per-partition throughput ceiling as its input, not an assumed one — capacity planning grounded in this lab's own evidence, not a formula copied from elsewhere.
+
 ## Objective
 
 A real, hand-built producer benchmark measuring the effect of batching
