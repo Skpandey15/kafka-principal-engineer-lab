@@ -1,5 +1,13 @@
 # Lab 01 — First Kafka Cluster
 
+## Quick Summary
+
+- **Why this lab:** To build the foundational mental model of what Kafka physically does with a record — broker, controller, topic, partition, offset — before any Java code enters the picture. CLI-only, deliberately: no producer/consumer application, no framework.
+- **How to run:** `docker compose -f platform/kafka/docker-compose.yml up -d`, then run every command via `docker exec kafka /opt/kafka/bin/<tool> --bootstrap-server localhost:9092 ...` (topics, console producer/consumer, consumer-groups, metadata-quorum).
+- **Expected input:** No prior Kafka experience, no Java, no local Kafka install — just Docker and a terminal. You create topics and type/pipe records in via the console producer.
+- **Expected output:** A healthy single-node KRaft cluster; a topic you can describe (leader/replicas/ISR); records you produce, consume, and replay identically every time; consumer-group offset/lag readable via `kafka-consumer-groups.sh`.
+- **What we learned:** Kafka doesn't delete a record on consumption — only retention does. Offsets belong to a partition, not a topic. Ordering is guaranteed only within a partition, never across a whole topic. The container is not the data — a named volume is; deleting the container preserves state, deleting the volume destroys it. A container reporting "healthy" is not the same claim as the Kafka service being usable.
+
 ## Objective
 
 Understand what Kafka physically and logically does with a record by

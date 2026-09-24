@@ -1,5 +1,13 @@
 # Lab 12 — Retry, DLQ & Idempotency
 
+## Quick Summary
+
+- **Why this lab:** To take WP-06's introductory idempotent-consumer check (a file-backed set) to full production depth: a real `processed_events` table with a unique constraint doing atomic duplicate detection, bounded retry with backoff, and a real dead-letter queue with Spring-Kafka-shaped headers.
+- **How to run:** Reuse `platform/kafka-cluster/` plus, for Postgres only, `platform/kafka-connect/`, then `produceOrderEvent -PeventId=...` (and `-Ppoison=true` for a malformed record) alongside `runRetryDlqConsumer`; `./gradlew test` for the 7-test suite.
+- **Expected input:** Docker, JDK 21+; a Postgres `processed_events` claim table (`group_id`, `event_id`, `status`, `claimed_at`).
+- **Expected output:** Bounded retries with measurable backoff before success; a poison record landing on `retry-dlq-orders.DLQ` with real `kafka_dlt-*` headers while consumption continues past it; a duplicate redelivery of the same `eventId` resulting in `DUPLICATE_SKIPPED`, not reprocessing.
+- **What we learned:** A database unique constraint is what makes concurrent duplicate claims safely serialize — not application-level locking. `RetryingRecordProcessor` is a plain class exercised identically by both the runnable app and the test suite, so there's no test-only reimplementation that could silently drift from what actually runs in production. An orphaned in-progress claim (from a mid-processing crash) can be reclaimed once it's older than a lease window — a real, deliberate scope boundary against building a full lease-reaper or DLQ-replay tool in this lab.
+
 ## Objective
 
 Take WP-06's introductory idempotent-consumer check (a file-backed

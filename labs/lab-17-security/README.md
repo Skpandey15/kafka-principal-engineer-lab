@@ -1,5 +1,13 @@
 # Lab 17 — Security
 
+## Quick Summary
+
+- **Why this lab:** To secure a real, single-node Kafka broker end to end — real TLS (a self-signed CA and CA-signed cert with real SANs), real SASL/SCRAM-SHA-512 authentication, and real `StandardAuthorizer` ACL enforcement — with genuine deny/grant/revoke against an actual broker, not simulated.
+- **How to run:** `cd platform/kafka-security && bash certs/generate-certs.sh && docker compose up -d`, then `./gradlew runSecurityDemo -Pusername=admin -Ppassword=admin-secret` (and again as `reader`, denied until you grant an ACL); `./gradlew test` for the 7-test suite against the real, already-running broker.
+- **Expected input:** Docker, JDK 21+; a dedicated, single-node environment (`platform/kafka-security/`), not the shared WP-07 cluster, since TLS/SASL/ACLs are single-broker configuration concerns.
+- **Expected output:** An authenticated admin producing and consuming successfully; a wrong SCRAM password failing authentication; a client with no truststore failing the TLS handshake outright; a reader denied until granted both topic AND group ACLs, then successfully denied again after revocation.
+- **What we learned:** Six real findings building this lab's infrastructure, most notably: the broker certificate needs a SAN covering every hostname a client actually connects with, not just a CN; the advertised listener address must match what a client can reach for its *second*, metadata-directed connection, not just the first bootstrap one; `User:ANONYMOUS` must be in `super.users` because the broker's own internal controller-registration traffic runs as ANONYMOUS; and ACL checks are ordered — group authorization is checked before topic authorization, so a write-only ACL alone lets you produce but not consume, even with no group ACL denial explicitly configured.
+
 ## Objective
 
 A real, single-node Kafka broker secured with TLS (a real, self-signed

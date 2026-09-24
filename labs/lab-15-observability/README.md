@@ -1,5 +1,13 @@
 # Lab 15 — Observability & Troubleshooting
 
+## Quick Summary
+
+- **Why this lab:** To build a real JMX exporter → Prometheus → Grafana pipeline against a real 3-broker cluster, and prove this WP's dedicated failure-matrix row: sustained consumer lag with no Kafka-side backpressure, plus the real data loss that follows once retention catches up to a lagging group.
+- **How to run:** Start `platform/kafka-cluster/` (now also running a JMX exporter agent per broker) and `platform/observability/` (Prometheus, Grafana, `kafka-exporter`); this lab has no runnable demo apps — every experiment is a real automated test run directly via `./gradlew test`, optionally watched live in Grafana (`http://localhost:3000`).
+- **Expected input:** Docker, JDK 21+; tests run against the real, already-running platform, not an ephemeral Testcontainers cluster — deliberately, since the subject IS standing infrastructure.
+- **Expected output:** Native Admin-API-computed lag matching Prometheus's independently-computed `kafka_consumergroup_lag` metric; lag growing unbounded with no producer backpressure; real data loss once that lag exceeds retention; visibly uneven per-partition throughput for a hot partition.
+- **What we learned:** Kafka has no built-in backpressure toward producers based on consumer lag — production continues regardless of how far behind consumers fall, up to retention limits, at which point unconsumed records are silently deleted. Consumer lag is not a broker-side JMX metric at all; it has to be computed via the Admin API (natively, or by a separate tool like `kafka-exporter`) by comparing committed offset against log-end offset. A real finding: a container-wide `KAFKA_OPTS` environment variable is inherited by the broker's own healthcheck CLI invocation, causing a real port-bind conflict — fixed by clearing `KAFKA_OPTS` for just that command.
+
 ## Objective
 
 A real JMX exporter → Prometheus → Grafana pipeline against the WP-07

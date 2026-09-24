@@ -1,5 +1,13 @@
 # Lab 08 — Transactions & Exactly-Once Semantics
 
+## Quick Summary
+
+- **Why this lab:** To precisely answer what Kafka's exactly-once semantics actually guarantees, and why that does NOT automatically mean exactly-once business processing across Kafka plus a database or external API — via idempotent producers, real transactions, isolation levels, and an atomic consume-transform-produce pipeline.
+- **How to run:** Reuse `platform/kafka-cluster/` (WP-07's 3-broker cluster), create the lab topics, then run the producer/consumer/pipeline apps (`runDuplicateRiskDemo`, `runIdempotentProducer`, `runTransactionalProducer -Paction=commit|abort`, `runIsolationConsumer`, `runMultiPartitionTransaction`, `runFencingDemo`, `runTransactionalPipeline -PfailurePoint=...`); `./gradlew test` for the 10-test Testcontainers suite (the authoritative evidence source).
+- **Expected input:** Docker, JDK 21+, WP-07 and WP-06 completed first; crash points are named and deterministic (`FailurePoint`), never a random kill.
+- **Expected output:** `read_uncommitted` consumers seeing aborted records that `read_committed` never does; one transaction committing atomically across three separate topics or none at all; a second producer instance fencing the first under a shared `transactional.id`; a transactional pipeline reprocessing exactly once after a pre-commit crash and never duplicating after a post-commit one.
+- **What we learned:** Kafka's idempotent producer and transactions guarantee no duplicate records from producer retries and no partially-visible transactional reads — guarantees entirely about Kafka's *own* state. They say nothing about a database write, an email, or a payment your application performs in response to a record; that's a separate reliability problem (idempotent consumer, transactional outbox — WP-12/WP-13), never something Kafka's EOS extends to for free. A fenced-out producer's next operation fails with `InvalidProducerEpochException`, not the commonly-assumed `ProducerFencedException` — verified against the real class hierarchy, not assumed from tutorials.
+
 ## Objective
 
 Build a hands-on progression through producer retries, duplicate risk, the

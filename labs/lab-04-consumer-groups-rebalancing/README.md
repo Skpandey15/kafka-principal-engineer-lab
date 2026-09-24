@@ -1,5 +1,13 @@
 # Lab 04 — Consumer Groups & Rebalancing Engineering
 
+## Quick Summary
+
+- **Why this lab:** To prove, with real timestamps, how a consumer group actually divides work, what happens on join/leave, and why frequent rebalances have a real operational cost even on a perfectly healthy cluster.
+- **How to run:** Start `platform/kafka/`, create the 3-partition lab topic, seed it (`runOrderProducer`), then run multiple `./gradlew runConsumer -PgroupId=<id> -PclientId=<id>` instances in separate terminals against the same group to watch ownership shift live; `./gradlew test` for the Testcontainers suite.
+- **Expected input:** A running WP-02 cluster, JDK 21+; run 1–5+ consumer instances against a 3-partition topic to see the ceiling.
+- **Expected output:** `PARTITIONS_REVOKED`/`PARTITIONS_ASSIGNED` log lines with real timestamps and partition lists; a 4th/5th consumer receiving a genuine, empty assignment; measured ~10s reassignment delay after an abrupt kill vs. near-instant reassignment on graceful shutdown.
+- **What we learned:** Partition count is a hard ceiling on useful consumer-group parallelism — extra consumers beyond it are fully healthy and fully idle. Graceful departure costs almost nothing; an abruptly-killed consumer's partitions aren't reassigned until `session.timeout.ms` elapses (measured: ~9.7–10.9s against a 10s config). Under the eager `RangeAssignor` protocol, *every* member revokes its *entire* assignment on *every* rebalance, not just the partitions actually changing hands — this is why frequent rebalances hurt throughput even when each one resolves correctly. `max.poll.interval.ms` violations are detected by the background heartbeat thread independently of whether the slow foreground processing loop has even returned.
+
 ## Objective
 
 This lab answers, with personal, measured, timestamped evidence:

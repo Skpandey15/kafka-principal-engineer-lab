@@ -1,5 +1,13 @@
 # Lab 05 — Offset Management & Delivery Semantics
 
+## Quick Summary
+
+- **Why this lab:** To prove, with real crash-injected evidence, the exact difference between a record's offset, a consumer's position, and a committed offset — and why the order of "process" versus "commit" determines whether a crash loses a record forever or reprocesses it.
+- **How to run:** Start `platform/kafka/`, create the two lab topics, seed with `runProducer`, then drive `runDeliverySemanticsApp` with `-PcommitTiming`, `-PfailurePoint`, `-PcrashAtEventId`, and `-Pidempotent` flags to reproduce each delivery-semantics scenario deterministically; `./gradlew test` for the Testcontainers suite.
+- **Expected input:** A running WP-02 cluster, JDK 21+; every scenario is driven by named, reproducible `FailurePoint` flags — never a random process kill.
+- **Expected output:** At-least-once reprocessing exactly one record after a crash; at-most-once permanently skipping exactly one record; an idempotent consumer showing `DUPLICATE_SKIPPED` for the identical redelivered record; auto-commit replaying an entire batch versus manual commit's single duplicate.
+- **What we learned:** Consumer position advances the instant `poll()` returns records, regardless of whether the app has processed them — only a committed offset survives a restart. Committing before processing (at-most-once) can permanently and silently lose a record; processing before committing (at-least-once) can duplicate one, never lose it. Auto-commit's duplicate blast radius is bounded only by its commit interval, not by anything the app controls. Commit granularity (`AFTER_PROCESS` vs. `AFTER_BATCH`) directly determines how many records get replayed after a partial failure — identical failure, identical data, 2 records replayed vs. 5. A large batch under whole-batch commit is an implicit bet that the entire batch finishes inside `max.poll.interval.ms`; losing that bet can invalidate an already-fully-processed batch's commit in one shot.
+
 ## Objective
 
 This lab answers, with real, captured, timestamped evidence:

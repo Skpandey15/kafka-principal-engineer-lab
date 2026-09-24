@@ -1,5 +1,13 @@
 # Lab 19 — Multi-Cluster & Disaster Recovery
 
+## Quick Summary
+
+- **Why this lab:** To build the one piece of genuinely new infrastructure WP-20's capstone needs — two real, independent Kafka clusters bridged by a real MirrorMaker 2 process — and prove both real cross-cluster replication and real DR consumer-group offset translation, the two mechanisms an actual DR failover runbook depends on.
+- **How to run:** `./gradlew test` — both experiments build their own ephemeral pair of Kafka clusters plus a real MM2 process via `TwoClusterEnvironment`, torn down automatically; run `--tests "*mirrorMaker2RealReplicatesRecordsFromPrimaryToARenamedSecondaryTopic*"` or `--tests "*consumerGroupOffsetsAreRealTranslatedAcrossClustersForDrFailover*"` individually.
+- **Expected input:** Docker, JDK 21+; no persistent `platform/` environment — everything is ephemeral Testcontainers infrastructure.
+- **Expected output:** Records produced on `primary` appearing on `secondary` under MM2's real `primary.<topic>` renaming convention; a consumer group that commits exactly offset 10 of 20 on `primary` translating, via `RemoteClusterUtils.translateOffsets`, to a secondary-side offset landing within one record of 10 — not 0, and not 20.
+- **What we learned:** Three real, sequential bugs, each confirmed via an actual test run: MM2 emits checkpoints continuously, so the *first* observed value can be stale — poll until it reaches the expected range, not just non-null. `KafkaConsumer`'s default `enable.auto.commit=true` means `close()` performs its own final auto-commit that can silently overwrite an already-correct explicit commit — disable it when you need exact control. And `offset.lag.max` (default 100) governs how densely MM2 samples offset-sync pairs for checkpoint translation — at low volume, the default leaves too few sample points, making DR failover offset translation wildly imprecise; verified by reading MM2's own raw checkpoint records directly.
+
 ## Objective
 
 Real MirrorMaker 2 — the actual `connect-mirror-maker.sh`, not a

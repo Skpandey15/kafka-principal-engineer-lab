@@ -1,5 +1,13 @@
 # Lab 09 — Schema Evolution & Schema Governance
 
+## Quick Summary
+
+- **Why this lab:** To show how producers and consumers can be deployed independently while their event contracts evolve safely — real Avro/Protobuf/JSON Schema against a real Confluent Schema Registry — and what actually happens when someone tries to introduce an incompatible schema.
+- **How to run:** Start `platform/kafka-cluster/` plus `platform/schema-registry/`, then run the progression: `runRawBytesDemo` → `runVersionSkewDemo` → `runAvroProducer -Pschema=v1|v2` → `checkAvroCompatibility` → `inspectWireFormat` → `runReaderWriterResolutionDemo` → `runNamingStrategyDemo` → `runProtobufProducer` → `runJsonSchemaProducer` → `runRegistryFailureDemo`; `./gradlew test` for the 15-test suite.
+- **Expected input:** Docker, JDK 21+; schema files under `src/main/avro`/`src/main/proto`, including deliberately-incompatible variants for rejection testing.
+- **Expected output:** A real magic-byte + schema-ID wire-format dump; real registry rejections with actual error reasons; a schema accepted under plain `FULL` compatibility but rejected under `FULL_TRANSITIVE` (which checks the whole history, not just the latest version).
+- **What we learned:** Two corrected assumptions from this lab's own build: the registry's convenient `testCompatibilityVerbose()` method only ever checks a candidate against the *latest* version, even under `*_TRANSITIVE` mode — giving CI a false pass for a real transitive incompatibility unless you check the full history explicitly. And `protobuf-java` 4.x is binary-incompatible with `kafka-protobuf-serializer:7.9.2`, producing a real `VerifyError` — pinned back to 3.25.5. More broadly: schema ID, subject, and version are three independent axes (the same schema ID can be shared across two different subjects), and a Schema Registry outage still serves already-cached schemas but fails on any new lookup.
+
 ## Objective
 
 Build a hands-on progression through serialization, Avro/Protobuf/JSON

@@ -1,5 +1,13 @@
 # Lab 13 — Kafka Streams
 
+## Quick Summary
+
+- **Why this lab:** To build three real Kafka Streams topologies (stateful aggregation, tumbling windows, a stream-table join) and prove, against a real multi-instance cluster, both of this WP's dedicated failure-matrix rows: a Streams process dying (task migration + changelog-based state restoration) and how standby replicas shrink that restoration cost.
+- **How to run:** Reuse `platform/kafka-cluster/`, then `./gradlew runStreamsApp -Ptopology=aggregation|windowed|enriched` (add `-PprocessingGuarantee=exactly_once_v2` for EOS); `./gradlew test` for the 6-test suite (3 fast `TopologyTestDriver` unit tests, 3 real Testcontainers multi-instance failure tests).
+- **Expected input:** Docker (for the integration tests only — `TopologyTestDriver` tests need no broker at all), JDK 21+.
+- **Expected output:** A running total per customer; sums correctly reset at tumbling-window boundaries; enriched output only for matched join keys; full state restored on a survivor after killing one Streams instance, with measurably less restoration time when a standby replica already held a warm copy.
+- **What we learned:** Kafka Streams rebuilds a migrated task's local state from its changelog topic — restoration time is proportional to changelog size, an availability cost, not a data-loss risk. A standby replica reduces that cost by keeping a warm copy elsewhere, not by eliminating the migration itself. A real serde finding: after a key-changing `.map()` in a join topology, `Joined.with(...)` must be supplied explicitly, or the topology fails fast with `ConfigException: Please specify a key serde`.
+
 ## Objective
 
 Three real topologies (stateful aggregation, tumbling windows, a
