@@ -1,0 +1,52 @@
+// Lab 19 — Multi-Cluster & Disaster Recovery (WP-20, Principal Engineer capstone).
+//
+// Same one-project-per-lab convention every prior lab uses. The ONE
+// genuinely new piece of hands-on infrastructure this capstone WP
+// builds -- see docs/multi-cluster/KAFKA_MULTI_CLUSTER_AND_DR.md,
+// Section 1, for why Cruise Control and Kubernetes/Strimzi are
+// covered conceptually rather than deployed for real here.
+
+import java.time.Duration
+
+plugins {
+    id 'java'
+}
+
+group = 'com.kafkalab'
+version = '0.1.0'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'org.apache.kafka:kafka-clients:4.3.1'
+    // MirrorMaker 2's own real client library -- RemoteClusterUtils,
+    // used to translate a consumer group's offsets from the primary
+    // cluster to the secondary one (real DR failover mechanics, not
+    // just "data got replicated").
+    implementation 'org.apache.kafka:connect-mirror-client:4.3.1'
+
+    implementation 'org.slf4j:slf4j-api:2.0.19'
+    runtimeOnly 'org.slf4j:slf4j-simple:2.0.19'
+
+    testImplementation 'org.junit.jupiter:junit-jupiter:6.1.3'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+
+    testImplementation 'org.testcontainers:testcontainers:2.0.5'
+    testImplementation 'org.testcontainers:testcontainers-junit-jupiter:2.0.5'
+}
+
+test {
+    useJUnitPlatform()
+    timeout = Duration.ofMinutes(15)
+    testLogging {
+        events = ['passed', 'skipped', 'failed']
+        exceptionFormat = 'full'
+    }
+}
