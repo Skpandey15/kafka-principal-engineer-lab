@@ -52,6 +52,19 @@ ephemeral Testcontainers clusters (a size-capped single-node cluster
 for disk pressure; a real 3-broker cluster for the production
 simulation), torn down automatically after each test run.
 
+### Kubernetes (k3d) alternative
+
+The automated test suite (`./gradlew test`) always uses its own ephemeral
+Testcontainers clusters, regardless of platform — there is no k8s
+equivalent for that, same as there's no Docker Compose one. If you want
+to manually explore the production-simulation experiment's own topology
+(a real 3-broker cluster) outside the automated suite,
+[`platform-k8s/kafka-cluster/`](../../platform-k8s/kafka-cluster/) is the
+same shape; `kubectl -n kafka-cluster delete pod -l app=kafka-broker-2`
+is the k8s equivalent of `docker kill`. The disk-pressure experiment's
+size-capped filesystem has no k8s manifest equivalent here — it stays
+Testcontainers-only.
+
 ## Architecture
 
 ```text

@@ -160,6 +160,20 @@ Kept brief — the full depth is in
    [`lab-02`'s Testcontainers troubleshooting note](../lab-02-native-java-producer-consumer/README.md#testcontainers-test-hangs-or-times-out)
    — the same `DOCKER_HOST` fix applies here unchanged.
 
+### Kubernetes (k3d) alternative
+
+```bash
+platform-k8s/bootstrap-cluster.sh   # once
+platform-k8s/kafka/setup.sh
+```
+
+Same host port (`localhost:9092`) as Docker Compose, so every
+`./gradlew run...` command below works unchanged. Create topics via
+`kubectl -n kafka exec deploy/kafka -- //opt/kafka/bin/kafka-topics.sh
+...` instead of `docker exec` — see
+[`platform-k8s/README.md`](../../platform-k8s/README.md). Cleanup:
+`platform-k8s/kafka/cleanup.sh [--wipe]`.
+
 ## Commands
 
 | Gradle task | Experiment |

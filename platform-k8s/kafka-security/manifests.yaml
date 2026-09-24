@@ -1,0 +1,191 @@
+# Kubernetes equivalent of platform/kafka-security/docker-compose.yml -- a
+# real, single-node KRaft broker with SASL_SSL (SCRAM-SHA-512 + TLS) and
+# real StandardAuthorizer ACL enforcement. Used by lab-17. Standalone --
+# does not depend on any other platform-k8s environment.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kafka-security
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kafka-security-config
+  namespace: kafka-security
+data:
+  server.properties: |
+    process.roles=broker,controller
+    node.id=1
+    log.dirs=/var/lib/kafka/data
+    listeners=CONTROLLER://:29093,INTERNAL://:9093,CLIENT://:9094
+    # Short hostname, not the cross-namespace FQDN other platform-k8s
+    # environments use -- this one's TLS cert SAN (below) is generated
+    # to match "security-broker" only, exactly like the original
+    # docker-compose cert. Nothing outside this namespace needs to reach
+    # this broker, so there's no reason to widen the cert's SAN just to
+    # use an FQDN here -- confirmed the hard way (a real
+    # CertificateException: SAN mismatch) when this line first used the
+    # FQDN instead.
+    advertised.listeners=INTERNAL://security-broker:9093,CLIENT://localhost:9196
+    listener.security.protocol.map=CONTROLLER:PLAINTEXT,INTERNAL:SASL_SSL,CLIENT:SASL_SSL
+    controller.listener.names=CONTROLLER
+    inter.broker.listener.name=INTERNAL
+    controller.quorum.voters=1@security-broker.kafka-security.svc.cluster.local:29093
+    sasl.enabled.mechanisms=SCRAM-SHA-512
+    sasl.mechanism.inter.broker.protocol=SCRAM-SHA-512
+    sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="admin" password="admin-secret";
+    listener.name.client.scram-sha-512.sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required;
+    listener.name.internal.scram-sha-512.sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required;
+    ssl.keystore.location=/etc/kafka/secrets/broker.keystore.p12
+    ssl.keystore.password=lab-security-changeit
+    ssl.key.password=lab-security-changeit
+    ssl.keystore.type=PKCS12
+    ssl.truststore.location=/etc/kafka/secrets/truststore.p12
+    ssl.truststore.password=lab-security-changeit
+    ssl.truststore.type=PKCS12
+    ssl.client.auth=none
+    authorizer.class.name=org.apache.kafka.metadata.authorizer.StandardAuthorizer
+    super.users=User:admin;User:ANONYMOUS
+    offsets.topic.replication.factor=1
+    transaction.state.log.replication.factor=1
+    transaction.state.log.min.isr=1
+    share.coordinator.state.topic.replication.factor=1
+    share.coordinator.state.topic.min.isr=1
+    group.initial.rebalance.delay.ms=0
+  admin-client.properties: |
+    security.protocol=SASL_SSL
+    sasl.mechanism=SCRAM-SHA-512
+    sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="admin" password="admin-secret";
+    ssl.truststore.location=/etc/kafka/secrets/truststore.p12
+    ssl.truststore.password=lab-security-changeit
+    ssl.truststore.type=PKCS12
+  reader-client.properties: |
+    security.protocol=SASL_SSL
+    sasl.mechanism=SCRAM-SHA-512
+    sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="reader" password="reader-secret";
+    ssl.truststore.location=/etc/kafka/secrets/truststore.p12
+    ssl.truststore.password=lab-security-changeit
+    ssl.truststore.type=PKCS12
+  entrypoint.sh: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+    CONFIG=/opt/kafka/config/server.properties
+    CLUSTER_ID="K18ssQeW0XX-Db6Vr4Sk8Ih"
+    /opt/kafka/bin/kafka-storage.sh format \
+        --cluster-id "$CLUSTER_ID" \
+        --config "$CONFIG" \
+        --add-scram 'SCRAM-SHA-512=[name=admin,password=admin-secret]' \
+        --add-scram 'SCRAM-SHA-512=[name=reader,password=reader-secret]' \
+        --ignore-formatted
+    exec /opt/kafka/bin/kafka-server-start.sh "$CONFIG"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: security-broker-data
+  namespace: kafka-security
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources: { requests: { storage: 1Gi } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: security-broker
+  namespace: kafka-security
+  labels: { app: security-broker }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: security-broker } }
+  template:
+    metadata: { labels: { app: security-broker } }
+    spec:
+      enableServiceLinks: false
+      hostname: security-broker
+      initContainers:
+        # Real self-signed CA + broker keystore/truststore, generated
+        # fresh on every pod start -- the same openssl/keytool commands
+        # platform/kafka-security/certs/generate-certs.sh runs, using the
+        # SAME apache/kafka:4.3.1 image (both tools confirmed present
+        # there) instead of a bind-mounted host directory.
+        - name: generate-certs
+          image: apache/kafka:4.3.1
+          command:
+            - bash
+            - -c
+            - |
+              set -euo pipefail
+              cd /certs
+              PASSWORD='lab-security-changeit'
+              openssl req -new -x509 -keyout ca.key -out ca.crt -days 3650 \
+                -subj '/CN=kafka-security-lab-ca/OU=lab/O=kafka-principal-engineer-lab' \
+                -passout pass:"$PASSWORD"
+              SAN='dns:security-broker,dns:localhost,ip:127.0.0.1'
+              keytool -genkeypair -alias broker -keyalg RSA -keysize 2048 -validity 3650 \
+                -keystore broker.keystore.p12 -storetype PKCS12 \
+                -dname 'CN=security-broker,OU=lab,O=kafka-principal-engineer-lab' \
+                -ext "SAN=$SAN" \
+                -storepass "$PASSWORD" -keypass "$PASSWORD"
+              keytool -certreq -alias broker -keystore broker.keystore.p12 \
+                -ext "SAN=$SAN" \
+                -storepass "$PASSWORD" -file broker.csr
+              printf 'subjectAltName=DNS:security-broker,DNS:localhost,IP:127.0.0.1\n' > broker-san.ext
+              openssl x509 -req -CA ca.crt -CAkey ca.key -in broker.csr -out broker.crt \
+                -days 3650 -CAcreateserial -passin pass:"$PASSWORD" -extfile broker-san.ext
+              keytool -importcert -alias ca -keystore broker.keystore.p12 \
+                -storepass "$PASSWORD" -file ca.crt -noprompt
+              keytool -importcert -alias broker -keystore broker.keystore.p12 \
+                -storepass "$PASSWORD" -file broker.crt -noprompt
+              keytool -importcert -alias ca -keystore truststore.p12 -storetype PKCS12 \
+                -storepass "$PASSWORD" -file ca.crt -noprompt
+              chmod 644 /certs/*.p12 /certs/*.crt /certs/*.key
+          volumeMounts:
+            - { name: certs, mountPath: /certs }
+      containers:
+        - name: kafka
+          image: apache/kafka:4.3.1
+          command: ["bash", "/opt/kafka/entrypoint.sh"]
+          ports: [{ containerPort: 9093 }, { containerPort: 9094 }, { containerPort: 29093 }]
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/kafka/data }
+            - { name: config, mountPath: /opt/kafka/config/server.properties, subPath: server.properties }
+            - { name: config, mountPath: /opt/kafka/entrypoint.sh, subPath: entrypoint.sh }
+            - { name: certs, mountPath: /etc/kafka/secrets }
+            - { name: config, mountPath: /etc/kafka/secrets/admin-client.properties, subPath: admin-client.properties }
+            - { name: config, mountPath: /etc/kafka/secrets/reader-client.properties, subPath: reader-client.properties }
+          readinessProbe:
+            # INTERNAL listener (9093), not CLIENT (9094) -- matches
+            # docker-compose's own healthcheck exactly, and for the same
+            # reason: this probe runs INSIDE the pod, so it needs the
+            # address the INTERNAL listener actually advertises
+            # in-cluster, not the CLIENT listener's host-facing
+            # "localhost:9196" (meaningless from inside the container
+            # itself).
+            exec:
+              command: ["/opt/kafka/bin/kafka-broker-api-versions.sh", "--bootstrap-server", "localhost:9093", "--command-config", "/etc/kafka/secrets/admin-client.properties"]
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            timeoutSeconds: 10
+            failureThreshold: 15
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: security-broker-data }
+        - name: config
+          configMap: { name: kafka-security-config }
+        - name: certs
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: security-broker
+  namespace: kafka-security
+spec:
+  type: NodePort
+  publishNotReadyAddresses: true
+  selector: { app: security-broker }
+  ports:
+    - { name: internal, port: 9093, targetPort: 9093 }
+    - { name: client, port: 9094, targetPort: 9094, nodePort: 30196 }
+    - { name: controller, port: 29093, targetPort: 29093 }

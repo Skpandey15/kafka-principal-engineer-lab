@@ -1,0 +1,203 @@
+# Kubernetes equivalent of platform/kafka-connect/docker-compose.yml -- a
+# real PostgreSQL instance (configured for logical replication) plus a real
+# Kafka Connect distributed-mode worker. Prerequisite: platform-k8s/kafka-cluster
+# must already be applied. Used by lab-10, lab-11, lab-12.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kafka-connect
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: kafka-connect
+data:
+  init-postgres.sql: |
+    CREATE TABLE IF NOT EXISTS orders (
+        order_id    VARCHAR(64) PRIMARY KEY,
+        customer_id VARCHAR(64) NOT NULL,
+        amount      NUMERIC(10, 2) NOT NULL,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE PUBLICATION dbz_publication FOR TABLE orders;
+    ALTER TABLE orders REPLICA IDENTITY FULL;
+  init-postgres-outbox.sql: |
+    CREATE TABLE IF NOT EXISTS outbox_demo_orders (
+        order_id    VARCHAR(64) PRIMARY KEY,
+        customer_id VARCHAR(64) NOT NULL,
+        amount      NUMERIC(10, 2) NOT NULL,
+        status      VARCHAR(32) NOT NULL DEFAULT 'CREATED',
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS outbox_event (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        aggregatetype VARCHAR(255) NOT NULL,
+        aggregateid   VARCHAR(255) NOT NULL,
+        type          VARCHAR(255) NOT NULL,
+        payload       JSONB NOT NULL,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE PUBLICATION dbz_outbox_publication FOR TABLE outbox_event;
+    ALTER TABLE outbox_event REPLICA IDENTITY FULL;
+  init-postgres-idempotency.sql: |
+    CREATE TABLE IF NOT EXISTS processed_events (
+        group_id     VARCHAR(128) NOT NULL,
+        event_id     VARCHAR(128) NOT NULL,
+        status       VARCHAR(16)  NOT NULL,
+        claimed_at   TIMESTAMPTZ  NOT NULL DEFAULT now(),
+        completed_at TIMESTAMPTZ,
+        PRIMARY KEY (group_id, event_id)
+    );
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  namespace: kafka-connect
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources: { requests: { storage: 1Gi } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: kafka-connect
+  labels: { app: postgres }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: postgres } }
+  template:
+    metadata: { labels: { app: postgres } }
+    spec:
+      enableServiceLinks: false
+      hostname: connect-postgres
+      containers:
+        - name: postgres
+          image: postgres:17.6
+          args: ["postgres", "-c", "wal_level=logical", "-c", "max_wal_senders=20", "-c", "max_replication_slots=20"]
+          ports: [{ containerPort: 5432 }]
+          env:
+            - { name: POSTGRES_DB, value: "inventory" }
+            - { name: POSTGRES_USER, value: "postgres" }
+            - { name: POSTGRES_PASSWORD, value: "postgres" }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+            - { name: init-scripts, mountPath: /docker-entrypoint-initdb.d }
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "postgres", "-d", "inventory"] }
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: postgres-data }
+        - name: init-scripts
+          configMap: { name: postgres-init }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: kafka-connect
+spec:
+  type: NodePort
+  selector: { app: postgres }
+  ports: [{ port: 5432, targetPort: 5432, nodePort: 30432 }]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: connect-worker-config
+  namespace: kafka-connect
+data:
+  connect-distributed.properties: |
+    bootstrap.servers=kafka-broker-1.kafka-cluster.svc.cluster.local:19092,kafka-broker-2.kafka-cluster.svc.cluster.local:19092,kafka-broker-3.kafka-cluster.svc.cluster.local:19092
+    group.id=wp11-connect-cluster
+    config.storage.topic=connect-configs
+    config.storage.replication.factor=3
+    offset.storage.topic=connect-offsets
+    offset.storage.replication.factor=3
+    offset.storage.partitions=25
+    status.storage.topic=connect-status
+    status.storage.replication.factor=3
+    status.storage.partitions=5
+    offset.flush.interval.ms=10000
+    key.converter=org.apache.kafka.connect.json.JsonConverter
+    key.converter.schemas.enable=true
+    value.converter=org.apache.kafka.connect.json.JsonConverter
+    value.converter.schemas.enable=true
+    plugin.path=/opt/kafka/connect-plugins
+    rest.host.name=0.0.0.0
+    rest.port=8083
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: connect-worker
+  namespace: kafka-connect
+  labels: { app: connect-worker }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: connect-worker } }
+  template:
+    metadata: { labels: { app: connect-worker } }
+    spec:
+      enableServiceLinks: false
+      hostname: connect-worker
+      initContainers:
+        # Mirrors platform/kafka-connect/fetch-plugins.sh -- same two
+        # plugins, same versions, fetched into a shared emptyDir instead of
+        # a bind-mounted host directory.
+        - name: fetch-plugins
+          image: curlimages/curl:8.11.1
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              mkdir -p /plugins/connect-file
+              curl -fsSL -o /plugins/connect-file/connect-file-4.3.1.jar \
+                https://repo1.maven.org/maven2/org/apache/kafka/connect-file/4.3.1/connect-file-4.3.1.jar
+              curl -fsSL -o /tmp/debezium.tar.gz \
+                https://repo1.maven.org/maven2/io/debezium/debezium-connector-postgres/3.6.3.Final/debezium-connector-postgres-3.6.3.Final-plugin.tar.gz
+              tar -xzf /tmp/debezium.tar.gz -C /plugins
+          volumeMounts:
+            - { name: plugins, mountPath: /plugins }
+      containers:
+        - name: connect-worker
+          image: apache/kafka:4.3.1
+          command: ["/opt/kafka/bin/connect-distributed.sh"]
+          args: ["/opt/kafka/config/connect-distributed.properties"]
+          ports: [{ containerPort: 8083 }]
+          volumeMounts:
+            - { name: connect-config, mountPath: /opt/kafka/config/connect-distributed.properties, subPath: connect-distributed.properties }
+            - { name: plugins, mountPath: /opt/kafka/connect-plugins }
+            - { name: connect-data, mountPath: /data }
+          readinessProbe:
+            exec: { command: ["bash", "-c", "echo > /dev/tcp/localhost/8083"] }
+            initialDelaySeconds: 15
+            periodSeconds: 5
+            timeoutSeconds: 10
+            failureThreshold: 15
+      volumes:
+        - name: connect-config
+          configMap: { name: connect-worker-config }
+        - name: plugins
+          emptyDir: {}
+        - name: connect-data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: connect-worker
+  namespace: kafka-connect
+spec:
+  type: NodePort
+  selector: { app: connect-worker }
+  ports: [{ port: 8083, targetPort: 8083, nodePort: 30083 }]

@@ -85,6 +85,23 @@ docker compose up -d
 Grafana: http://localhost:3000 (anonymous admin access, local-only --
 see "Production considerations"). Prometheus: http://localhost:9090.
 
+### Kubernetes (k3d) alternative
+
+```bash
+platform-k8s/bootstrap-cluster.sh   # once
+platform-k8s/kafka-cluster/setup.sh
+platform-k8s/observability/setup.sh
+```
+
+Same host ports as Docker Compose (`localhost:9090`, `localhost:9308`,
+`localhost:3000`) — the JMX exporter agent is already baked into
+`kafka-cluster`'s own manifest (via an initContainer), no separate
+`fetch-jmx-exporter.sh` step needed. See
+[`platform-k8s/README.md`](../../platform-k8s/README.md) for the
+internal-listener and path-mangling gotchas. Cleanup (in reverse order):
+`platform-k8s/observability/cleanup.sh` then
+`platform-k8s/kafka-cluster/cleanup.sh [--wipe]`.
+
 ## Commands
 
 This lab has no runnable demo apps of its own -- every experiment is a

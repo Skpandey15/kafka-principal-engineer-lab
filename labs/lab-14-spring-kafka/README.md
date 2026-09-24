@@ -75,6 +75,20 @@ cd platform/kafka-cluster && docker compose up -d
 
 (Not needed to run `./gradlew test` -- only for `./gradlew bootRun`.)
 
+### Kubernetes (k3d) alternative
+
+```bash
+platform-k8s/bootstrap-cluster.sh   # once
+platform-k8s/kafka-cluster/setup.sh
+```
+
+Same three host ports as Docker Compose. Only needed for `./gradlew
+bootRun` — `./gradlew test` (`@EmbeddedKafka`) needs neither this nor
+Docker Compose. See
+[`platform-k8s/README.md`](../../platform-k8s/README.md) for the
+internal-listener and path-mangling gotchas. Cleanup:
+`platform-k8s/kafka-cluster/cleanup.sh [--wipe]`.
+
 ## Commands
 
 ```bash

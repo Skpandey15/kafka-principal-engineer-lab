@@ -70,6 +70,21 @@ cd ../kafka-connect && docker compose up -d postgres
 
 (No `fetch-plugins.sh` needed -- this lab never touches Kafka Connect.)
 
+### Kubernetes (k3d) alternative
+
+```bash
+platform-k8s/bootstrap-cluster.sh   # once
+platform-k8s/kafka-cluster/setup.sh
+platform-k8s/kafka-connect/setup.sh   # for its Postgres only -- no Connect worker needed
+```
+
+Same host ports as Docker Compose (`localhost:9093-9095`, `localhost:5432`).
+The `processed_events` table is already part of the k8s Postgres init
+ConfigMap. See [`platform-k8s/README.md`](../../platform-k8s/README.md)
+for the internal-listener and path-mangling gotchas. Cleanup (in reverse
+order): `platform-k8s/kafka-connect/cleanup.sh` then
+`platform-k8s/kafka-cluster/cleanup.sh [--wipe]`.
+
 ## Commands
 
 | Task | What it runs |

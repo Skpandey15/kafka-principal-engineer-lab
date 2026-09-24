@@ -128,6 +128,23 @@ Kept brief — full depth is in
    **Windows + Testcontainers:** if `./gradlew test` hangs, see
    [`lab-02`'s Testcontainers troubleshooting note](../lab-02-native-java-producer-consumer/README.md#testcontainers-test-hangs-or-times-out).
 
+### Kubernetes (k3d) alternative
+
+```bash
+platform-k8s/bootstrap-cluster.sh   # once
+platform-k8s/kafka-cluster/setup.sh
+```
+
+Same three host ports (`localhost:9093/9094/9095`) as Docker Compose.
+Topic administration: `kubectl -n kafka-cluster exec deploy/kafka-broker-1 --
+//opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka-broker-1:19092 ...`
+(the INTERNAL listener, not the host-facing one — see
+[`platform-k8s/README.md`](../../platform-k8s/README.md)). Broker
+failure: `kubectl -n kafka-cluster delete pod -l app=kafka-broker-2`
+(Kubernetes' equivalent of `docker kill`) and `kubectl -n kafka-cluster
+rollout restart deployment/kafka-broker-2` to bring it back. Cleanup:
+`platform-k8s/kafka-cluster/cleanup.sh [--wipe]`.
+
 ## Commands
 
 | Gradle task | Purpose |

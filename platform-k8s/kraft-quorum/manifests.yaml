@@ -1,0 +1,393 @@
+# Kubernetes equivalent of platform/kraft-quorum/docker-compose.yml -- 3
+# controller-only voters + 3 broker-only nodes (dedicated-role topology, for
+# lab-07). See platform/kraft-quorum/README.md for the full reasoning behind
+# every KAFKA_* value -- unchanged here. Controllers get NO NodePort, exactly
+# like docker-compose never publishes a host port for them -- see that
+# README's "Why controllers have no host port" note.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kraft-quorum
+---
+# ============================== controller-1 ==============================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kafka-controller-1-data
+  namespace: kraft-quorum
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources: { requests: { storage: 512Mi } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-controller-1
+  namespace: kraft-quorum
+  labels: { app: kafka-controller-1 }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: kafka-controller-1 } }
+  template:
+    metadata: { labels: { app: kafka-controller-1 } }
+    spec:
+      enableServiceLinks: false
+      hostname: kafka-controller-1
+      containers:
+        - name: kafka
+          image: apache/kafka:4.3.1
+          ports: [{ containerPort: 29093 }]
+          env:
+            - { name: KAFKA_NODE_ID, value: "1" }
+            - { name: KAFKA_PROCESS_ROLES, value: "controller" }
+            - { name: KAFKA_LISTENERS, value: "CONTROLLER://:29093" }
+            - { name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP, value: "CONTROLLER:PLAINTEXT" }
+            - { name: KAFKA_CONTROLLER_LISTENER_NAMES, value: "CONTROLLER" }
+            - { name: KAFKA_CONTROLLER_QUORUM_VOTERS, value: "1@kafka-controller-1.kraft-quorum.svc.cluster.local:29093,2@kafka-controller-2.kraft-quorum.svc.cluster.local:29093,3@kafka-controller-3.kraft-quorum.svc.cluster.local:29093" }
+            - { name: CLUSTER_ID, value: "6Zy-q9GlR3u9dQkH6Aj_4A" }
+            - { name: KAFKA_LOG_DIRS, value: "/var/lib/kafka/data" }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/kafka/data }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: kafka-controller-1-data }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-controller-1
+  namespace: kraft-quorum
+spec:
+  # No client-facing port at all -- matches docker-compose never publishing
+  # one for a controller-only node. publishNotReadyAddresses: true is the
+  # same fix kafka-cluster's Services needed (see that manifest's comment):
+  # the three controllers must reach each other to form quorum before any
+  # of them could pass a readiness check, if one were ever added later.
+  publishNotReadyAddresses: true
+  selector: { app: kafka-controller-1 }
+  ports: [{ name: controller, port: 29093, targetPort: 29093 }]
+---
+# ============================== controller-2 ==============================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kafka-controller-2-data
+  namespace: kraft-quorum
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources: { requests: { storage: 512Mi } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-controller-2
+  namespace: kraft-quorum
+  labels: { app: kafka-controller-2 }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: kafka-controller-2 } }
+  template:
+    metadata: { labels: { app: kafka-controller-2 } }
+    spec:
+      enableServiceLinks: false
+      hostname: kafka-controller-2
+      containers:
+        - name: kafka
+          image: apache/kafka:4.3.1
+          ports: [{ containerPort: 29093 }]
+          env:
+            - { name: KAFKA_NODE_ID, value: "2" }
+            - { name: KAFKA_PROCESS_ROLES, value: "controller" }
+            - { name: KAFKA_LISTENERS, value: "CONTROLLER://:29093" }
+            - { name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP, value: "CONTROLLER:PLAINTEXT" }
+            - { name: KAFKA_CONTROLLER_LISTENER_NAMES, value: "CONTROLLER" }
+            - { name: KAFKA_CONTROLLER_QUORUM_VOTERS, value: "1@kafka-controller-1.kraft-quorum.svc.cluster.local:29093,2@kafka-controller-2.kraft-quorum.svc.cluster.local:29093,3@kafka-controller-3.kraft-quorum.svc.cluster.local:29093" }
+            - { name: CLUSTER_ID, value: "6Zy-q9GlR3u9dQkH6Aj_4A" }
+            - { name: KAFKA_LOG_DIRS, value: "/var/lib/kafka/data" }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/kafka/data }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: kafka-controller-2-data }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-controller-2
+  namespace: kraft-quorum
+spec:
+  publishNotReadyAddresses: true
+  selector: { app: kafka-controller-2 }
+  ports: [{ name: controller, port: 29093, targetPort: 29093 }]
+---
+# ============================== controller-3 ==============================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kafka-controller-3-data
+  namespace: kraft-quorum
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources: { requests: { storage: 512Mi } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-controller-3
+  namespace: kraft-quorum
+  labels: { app: kafka-controller-3 }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: kafka-controller-3 } }
+  template:
+    metadata: { labels: { app: kafka-controller-3 } }
+    spec:
+      enableServiceLinks: false
+      hostname: kafka-controller-3
+      containers:
+        - name: kafka
+          image: apache/kafka:4.3.1
+          ports: [{ containerPort: 29093 }]
+          env:
+            - { name: KAFKA_NODE_ID, value: "3" }
+            - { name: KAFKA_PROCESS_ROLES, value: "controller" }
+            - { name: KAFKA_LISTENERS, value: "CONTROLLER://:29093" }
+            - { name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP, value: "CONTROLLER:PLAINTEXT" }
+            - { name: KAFKA_CONTROLLER_LISTENER_NAMES, value: "CONTROLLER" }
+            - { name: KAFKA_CONTROLLER_QUORUM_VOTERS, value: "1@kafka-controller-1.kraft-quorum.svc.cluster.local:29093,2@kafka-controller-2.kraft-quorum.svc.cluster.local:29093,3@kafka-controller-3.kraft-quorum.svc.cluster.local:29093" }
+            - { name: CLUSTER_ID, value: "6Zy-q9GlR3u9dQkH6Aj_4A" }
+            - { name: KAFKA_LOG_DIRS, value: "/var/lib/kafka/data" }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/kafka/data }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: kafka-controller-3-data }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-controller-3
+  namespace: kraft-quorum
+spec:
+  publishNotReadyAddresses: true
+  selector: { app: kafka-controller-3 }
+  ports: [{ name: controller, port: 29093, targetPort: 29093 }]
+---
+# ============================== broker-1 (node id 4) ==============================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kraft-quorum-broker-1-data
+  namespace: kraft-quorum
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources: { requests: { storage: 1Gi } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kraft-quorum-broker-1
+  namespace: kraft-quorum
+  labels: { app: kraft-quorum-broker-1 }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: kraft-quorum-broker-1 } }
+  template:
+    metadata: { labels: { app: kraft-quorum-broker-1 } }
+    spec:
+      enableServiceLinks: false
+      hostname: kraft-quorum-broker-1
+      containers:
+        - name: kafka
+          image: apache/kafka:4.3.1
+          ports: [{ containerPort: 9092 }, { containerPort: 19092 }]
+          env:
+            - { name: KAFKA_NODE_ID, value: "4" }
+            - { name: KAFKA_PROCESS_ROLES, value: "broker" }
+            - { name: KAFKA_LISTENERS, value: "PLAINTEXT_HOST://:9092,PLAINTEXT://:19092" }
+            - { name: KAFKA_ADVERTISED_LISTENERS, value: "PLAINTEXT_HOST://localhost:9096,PLAINTEXT://kraft-quorum-broker-1.kraft-quorum.svc.cluster.local:19092" }
+            - { name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP, value: "CONTROLLER:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,PLAINTEXT:PLAINTEXT" }
+            - { name: KAFKA_INTER_BROKER_LISTENER_NAME, value: "PLAINTEXT" }
+            - { name: KAFKA_CONTROLLER_LISTENER_NAMES, value: "CONTROLLER" }
+            - { name: KAFKA_CONTROLLER_QUORUM_VOTERS, value: "1@kafka-controller-1.kraft-quorum.svc.cluster.local:29093,2@kafka-controller-2.kraft-quorum.svc.cluster.local:29093,3@kafka-controller-3.kraft-quorum.svc.cluster.local:29093" }
+            - { name: CLUSTER_ID, value: "6Zy-q9GlR3u9dQkH6Aj_4A" }
+            - { name: KAFKA_LOG_DIRS, value: "/var/lib/kafka/data" }
+            - { name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR, value: "3" }
+            - { name: KAFKA_OFFSETS_TOPIC_MIN_ISR, value: "2" }
+            - { name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR, value: "3" }
+            - { name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR, value: "2" }
+            - { name: KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR, value: "3" }
+            - { name: KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR, value: "2" }
+            - { name: KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS, value: "0" }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/kafka/data }
+          readinessProbe:
+            exec: { command: ["/opt/kafka/bin/kafka-broker-api-versions.sh", "--bootstrap-server", "localhost:9092"] }
+            initialDelaySeconds: 15
+            periodSeconds: 5
+            timeoutSeconds: 10
+            failureThreshold: 12
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: kraft-quorum-broker-1-data }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kraft-quorum-broker-1
+  namespace: kraft-quorum
+spec:
+  type: NodePort
+  publishNotReadyAddresses: true
+  selector: { app: kraft-quorum-broker-1 }
+  ports:
+    - { name: external, port: 9092, targetPort: 9092, nodePort: 30096 }
+    - { name: internal, port: 19092, targetPort: 19092 }
+---
+# ============================== broker-2 (node id 5) ==============================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kraft-quorum-broker-2-data
+  namespace: kraft-quorum
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources: { requests: { storage: 1Gi } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kraft-quorum-broker-2
+  namespace: kraft-quorum
+  labels: { app: kraft-quorum-broker-2 }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: kraft-quorum-broker-2 } }
+  template:
+    metadata: { labels: { app: kraft-quorum-broker-2 } }
+    spec:
+      enableServiceLinks: false
+      hostname: kraft-quorum-broker-2
+      containers:
+        - name: kafka
+          image: apache/kafka:4.3.1
+          ports: [{ containerPort: 9092 }, { containerPort: 19092 }]
+          env:
+            - { name: KAFKA_NODE_ID, value: "5" }
+            - { name: KAFKA_PROCESS_ROLES, value: "broker" }
+            - { name: KAFKA_LISTENERS, value: "PLAINTEXT_HOST://:9092,PLAINTEXT://:19092" }
+            - { name: KAFKA_ADVERTISED_LISTENERS, value: "PLAINTEXT_HOST://localhost:9097,PLAINTEXT://kraft-quorum-broker-2.kraft-quorum.svc.cluster.local:19092" }
+            - { name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP, value: "CONTROLLER:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,PLAINTEXT:PLAINTEXT" }
+            - { name: KAFKA_INTER_BROKER_LISTENER_NAME, value: "PLAINTEXT" }
+            - { name: KAFKA_CONTROLLER_LISTENER_NAMES, value: "CONTROLLER" }
+            - { name: KAFKA_CONTROLLER_QUORUM_VOTERS, value: "1@kafka-controller-1.kraft-quorum.svc.cluster.local:29093,2@kafka-controller-2.kraft-quorum.svc.cluster.local:29093,3@kafka-controller-3.kraft-quorum.svc.cluster.local:29093" }
+            - { name: CLUSTER_ID, value: "6Zy-q9GlR3u9dQkH6Aj_4A" }
+            - { name: KAFKA_LOG_DIRS, value: "/var/lib/kafka/data" }
+            - { name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR, value: "3" }
+            - { name: KAFKA_OFFSETS_TOPIC_MIN_ISR, value: "2" }
+            - { name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR, value: "3" }
+            - { name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR, value: "2" }
+            - { name: KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR, value: "3" }
+            - { name: KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR, value: "2" }
+            - { name: KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS, value: "0" }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/kafka/data }
+          readinessProbe:
+            exec: { command: ["/opt/kafka/bin/kafka-broker-api-versions.sh", "--bootstrap-server", "localhost:9092"] }
+            initialDelaySeconds: 15
+            periodSeconds: 5
+            timeoutSeconds: 10
+            failureThreshold: 12
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: kraft-quorum-broker-2-data }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kraft-quorum-broker-2
+  namespace: kraft-quorum
+spec:
+  type: NodePort
+  publishNotReadyAddresses: true
+  selector: { app: kraft-quorum-broker-2 }
+  ports:
+    - { name: external, port: 9092, targetPort: 9092, nodePort: 30097 }
+    - { name: internal, port: 19092, targetPort: 19092 }
+---
+# ============================== broker-3 (node id 6) ==============================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kraft-quorum-broker-3-data
+  namespace: kraft-quorum
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources: { requests: { storage: 1Gi } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kraft-quorum-broker-3
+  namespace: kraft-quorum
+  labels: { app: kraft-quorum-broker-3 }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: kraft-quorum-broker-3 } }
+  template:
+    metadata: { labels: { app: kraft-quorum-broker-3 } }
+    spec:
+      enableServiceLinks: false
+      hostname: kraft-quorum-broker-3
+      containers:
+        - name: kafka
+          image: apache/kafka:4.3.1
+          ports: [{ containerPort: 9092 }, { containerPort: 19092 }]
+          env:
+            - { name: KAFKA_NODE_ID, value: "6" }
+            - { name: KAFKA_PROCESS_ROLES, value: "broker" }
+            - { name: KAFKA_LISTENERS, value: "PLAINTEXT_HOST://:9092,PLAINTEXT://:19092" }
+            - { name: KAFKA_ADVERTISED_LISTENERS, value: "PLAINTEXT_HOST://localhost:9098,PLAINTEXT://kraft-quorum-broker-3.kraft-quorum.svc.cluster.local:19092" }
+            - { name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP, value: "CONTROLLER:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,PLAINTEXT:PLAINTEXT" }
+            - { name: KAFKA_INTER_BROKER_LISTENER_NAME, value: "PLAINTEXT" }
+            - { name: KAFKA_CONTROLLER_LISTENER_NAMES, value: "CONTROLLER" }
+            - { name: KAFKA_CONTROLLER_QUORUM_VOTERS, value: "1@kafka-controller-1.kraft-quorum.svc.cluster.local:29093,2@kafka-controller-2.kraft-quorum.svc.cluster.local:29093,3@kafka-controller-3.kraft-quorum.svc.cluster.local:29093" }
+            - { name: CLUSTER_ID, value: "6Zy-q9GlR3u9dQkH6Aj_4A" }
+            - { name: KAFKA_LOG_DIRS, value: "/var/lib/kafka/data" }
+            - { name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR, value: "3" }
+            - { name: KAFKA_OFFSETS_TOPIC_MIN_ISR, value: "2" }
+            - { name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR, value: "3" }
+            - { name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR, value: "2" }
+            - { name: KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR, value: "3" }
+            - { name: KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR, value: "2" }
+            - { name: KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS, value: "0" }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/kafka/data }
+          readinessProbe:
+            exec: { command: ["/opt/kafka/bin/kafka-broker-api-versions.sh", "--bootstrap-server", "localhost:9092"] }
+            initialDelaySeconds: 15
+            periodSeconds: 5
+            timeoutSeconds: 10
+            failureThreshold: 12
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: kraft-quorum-broker-3-data }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kraft-quorum-broker-3
+  namespace: kraft-quorum
+spec:
+  type: NodePort
+  publishNotReadyAddresses: true
+  selector: { app: kraft-quorum-broker-3 }
+  ports:
+    - { name: external, port: 9092, targetPort: 9092, nodePort: 30098 }
+    - { name: internal, port: 19092, targetPort: 19092 }

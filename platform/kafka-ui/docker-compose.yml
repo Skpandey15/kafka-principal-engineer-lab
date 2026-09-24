@@ -1,0 +1,67 @@
+# Kafbat UI (kafbat/kafka-ui) -- a visual cluster browser for the WP-07
+# 3-broker cluster and (if running) WP-10's Schema Registry. See
+# platform/kafka-ui/README.md and docs/references/REFERENCE_REPOSITORIES.md
+# ("kafbat/kafka-ui") for why THIS fork, not the abandoned, unpatched-CVE
+# provectus/kafka-ui image several older tutorials still reference.
+#
+# A SEPARATE compose project from platform/kafka-cluster/ (WP-07), on the
+# SAME external kafka-cluster_default network -- the identical pattern
+# platform/schema-registry/, platform/kafka-connect/, and
+# platform/observability/ already established: reuse the existing 3-broker
+# cluster, add only the new infrastructure this tool actually needs.
+#
+# Prerequisite: platform/kafka-cluster/ must already be running. Schema
+# Registry (platform/schema-registry/) is optional -- if it isn't running,
+# Kafbat UI still works for topics/consumer-groups/brokers, it just can't
+# show registered schemas.
+#
+# Per this repository's own learning-sequence note in
+# REFERENCE_REPOSITORIES.md: this is optional, secondary tooling -- always
+# use it AFTER the CLI-based labs it accompanies, never as a substitute for
+# understanding raw Kafka state (topics, offsets, consumer groups) by hand
+# first.
+
+services:
+  kafka-ui:
+    # Pinned to an explicit release, never `latest` -- v1.5.0 was the
+    # current stable release on ghcr.io/kafbat/kafka-ui at the time this
+    # was written; verify a newer pin yourself against
+    # https://github.com/kafbat/kafka-ui/releases before changing it.
+    image: ghcr.io/kafbat/kafka-ui:v1.5.0
+    container_name: kafka-ui
+    hostname: kafka-ui
+    networks:
+      - kafka-cluster_default
+    ports:
+      - "8080:8080"
+    environment:
+      # Talks to the brokers over their INTERNAL (PLAINTEXT, :19092)
+      # listener, by Docker network hostname -- the same
+      # "internal-listener-for-anything-inside-the-network" rule
+      # WP-07/WP-08/WP-10/WP-11 already established for CLI tools and
+      # other services run via `docker exec`/on this network.
+      KAFKA_CLUSTERS_0_NAME: wp07-3-broker-cluster
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: "kafka-broker-1:19092,kafka-broker-2:19092,kafka-broker-3:19092"
+      # Optional: only resolves if platform/schema-registry/ is also
+      # running on this same network. Kafbat UI degrades gracefully
+      # (schema browsing just won't work) if it isn't -- this is not a
+      # hard dependency the way kafka-cluster itself is.
+      KAFKA_CLUSTERS_0_SCHEMAREGISTRY: "http://schema-registry:8081"
+      # Lets you add/edit cluster connections from the UI itself, not
+      # just this file -- genuinely useful while exploring, and safe
+      # here since this is a local, single-user learning environment
+      # with no auth in front of it (see "Production considerations").
+      DYNAMIC_CONFIG_ENABLED: "true"
+    healthcheck:
+      # The real liveness/readiness endpoint this project's own README
+      # documents -- confirmed via
+      # https://github.com/kafbat/kafka-ui#liveliness-and-readiness-probes.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+
+networks:
+  kafka-cluster_default:
+    external: true
