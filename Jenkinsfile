@@ -64,6 +64,56 @@ def runGradleTest(String lab) {
     }
 }
 
+// platform-k8s/ CD validation -- proves each lab's Kubernetes manifests
+// still deploy cleanly on a real k3d cluster, separate from (and much
+// heavier than) the Testcontainers-based lab test suites above. Every
+// environment here is fully self-contained (its own initContainer fetches
+// whatever it needs -- TLS certs, Connect plugins -- no manual pre-step),
+// per platform-k8s/README.md.
+//
+// Deliberately sequential, one environment at a time (deploy, validate
+// readiness via that environment's own setup.sh, wipe), never all 9
+// running concurrently on the one shared k3d node -- this repo's own
+// hard-learned practice after running too many heavy JVM environments
+// at once caused real Docker/Rancher Desktop instability.
+def standaloneK8sEnvironments = [
+    'kafka',
+    'kraft-quorum',
+    'kafka-security',
+    'multi-cluster-dr',
+]
+
+// These four all need platform-k8s/kafka-cluster/ applied first (their own
+// setup.sh scripts check for and refuse to proceed without the
+// 'kafka-cluster' namespace already existing).
+def kafkaClusterDependentK8sEnvironments = [
+    'schema-registry',
+    'kafka-connect',
+    'observability',
+    'kafka-ui',
+]
+
+// Deploys one platform-k8s/<env> environment, lets its own setup.sh be the
+// readiness check (kubectl apply + wait_for_pods_ready, per
+// platform-k8s/_lib/common.sh), then always wipes it (namespace + PVCs)
+// before moving on -- regardless of whether setup.sh succeeded, so one
+// bad environment never leaves stray state for the next one. Returns true
+// on success, false on failure, rather than throwing, so the caller can
+// keep validating every other environment and report all failures together
+// at the end instead of stopping at the first one.
+def deployValidateWipe(String env) {
+    def ok = true
+    try {
+        sh "bash platform-k8s/${env}/setup.sh"
+    } catch (e) {
+        ok = false
+        echo "FAILED: platform-k8s/${env}/setup.sh did not reach ready state: ${e}"
+    } finally {
+        sh "bash platform-k8s/${env}/cleanup.sh --wipe || true"
+    }
+    return ok
+}
+
 pipeline {
     agent none
 
@@ -71,6 +121,20 @@ pipeline {
         timestamps()
         timeout(time: 90, unit: 'MINUTES')
         disableConcurrentBuilds()
+    }
+
+    parameters {
+        // Off by default: this stage deploys 9 environments sequentially onto
+        // a real k3d cluster (real JVM Kafka brokers each time) and can take
+        // 30-45+ minutes, versus a few minutes for the Testcontainers-based
+        // lab test suites above. Flip the default to true, or wire a nightly
+        // cron trigger with this parameter pre-set, once you've seen it pass
+        // at least once against your actual Jenkins agent.
+        booleanParam(
+            name: 'RUN_K8S_DEPLOY_VALIDATION',
+            defaultValue: false,
+            description: 'Also deploy every platform-k8s/ environment to a k3d cluster and validate readiness (slow; needs k3d+kubectl on the agent).'
+        )
     }
 
     stages {
@@ -150,6 +214,52 @@ pipeline {
                     }
 
                     parallel branches
+                }
+            }
+        }
+
+        stage('k3d deploy validation (platform-k8s/)') {
+            when { expression { return params.RUN_K8S_DEPLOY_VALIDATION } }
+            agent { label 'docker' }
+            steps {
+                script {
+                    sh 'bash platform-k8s/bootstrap-cluster.sh'
+
+                    def failed = []
+
+                    standaloneK8sEnvironments.each { env ->
+                        if (!deployValidateWipe(env)) {
+                            failed << env
+                        }
+                    }
+
+                    try {
+                        sh 'bash platform-k8s/kafka-cluster/setup.sh'
+
+                        kafkaClusterDependentK8sEnvironments.each { env ->
+                            if (!deployValidateWipe(env)) {
+                                failed << env
+                            }
+                        }
+                    } catch (e) {
+                        failed << 'kafka-cluster'
+                        echo "FAILED: platform-k8s/kafka-cluster/setup.sh did not reach ready state: ${e}"
+                    } finally {
+                        sh 'bash platform-k8s/kafka-cluster/cleanup.sh --wipe || true'
+                    }
+
+                    if (failed) {
+                        error "platform-k8s/ environments that failed to deploy cleanly: ${failed.join(', ')}"
+                    }
+                }
+            }
+            post {
+                // Ephemeral per CI run -- destroy the whole shared k3d cluster
+                // rather than leaving it (and its port bindings) on the agent
+                // for the next build, unlike the persistent-by-design cluster
+                // platform-k8s/README.md describes for local use.
+                always {
+                    sh 'bash platform-k8s/destroy-cluster.sh || true'
                 }
             }
         }

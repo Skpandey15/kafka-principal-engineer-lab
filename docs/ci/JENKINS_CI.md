@@ -32,6 +32,52 @@ time; lab-17 needs a real self-signed CA and SCRAM users bootstrapped at
 storage-format time). The Jenkinsfile respects that instead of forcing
 them into the same pattern as the other 16.
 
+## `platform-k8s/` (k3d) deploy validation -- opt-in
+
+A separate stage, `k3d deploy validation (platform-k8s/)`, deploys every
+`platform-k8s/*` environment to a real k3d cluster and treats that
+environment's own `setup.sh` (which already does `kubectl apply` + wait
+for real pod readiness, per
+[`platform-k8s/_lib/common.sh`](../../platform-k8s/_lib/common.sh)) as
+the pass/fail check. Unlike the Testcontainers-based lab suites, this is
+a genuine CD-style check -- it doesn't run any Gradle tests, it proves
+the Kubernetes manifests themselves still deploy and reach Ready.
+
+It's gated behind a `RUN_K8S_DEPLOY_VALIDATION` build parameter,
+**default `false`**. Reasons it's opt-in rather than on by default:
+
+- It deploys 9 environments -- real JVM Kafka brokers each time -- onto
+  one shared k3d cluster, sequentially, one at a time (never all 9
+  concurrently). That's this repo's own hard-learned practice: running
+  too many heavy JVM environments simultaneously is what caused real
+  Docker/Rancher Desktop instability during local development of this
+  repo's Kubernetes environments.
+- It can take 30-45+ minutes end to end, versus a few minutes for the
+  Testcontainers-based lab suites -- too slow to make every push/PR wait
+  on.
+- It needs `k3d` and `kubectl` installed on the agent, on top of Docker
+  and JDK 21.
+
+Every environment is deployed, validated, then wiped (`cleanup.sh
+--wipe`, deleting its namespace and PersistentVolumeClaims) before the
+next one starts -- so a failure in one environment never leaves stray
+state for the next. `kafka-cluster` is the one exception: it's deployed
+once, kept up while its four dependents (`schema-registry`,
+`kafka-connect`, `observability`, `kafka-ui` -- each of which requires it,
+per their own `setup.sh` prerequisite checks) are deployed, validated,
+and wiped one at a time, then wiped itself last. The whole k3d cluster is
+destroyed (`destroy-cluster.sh`) in the stage's `post { always { ... } }`
+block, since a CI agent shouldn't accumulate a persistent cluster across
+runs the way `platform-k8s/README.md` assumes for local, ongoing use.
+
+To actually run it: tick `RUN_K8S_DEPLOY_VALIDATION` on a "Build with
+Parameters" run, or flip its `defaultValue` to `true` once you've seen it
+pass at least once against your real agent, or wire a nightly `cron`
+trigger that pre-sets the parameter (e.g. via a
+`parameters([booleanParam(...)])` override in a separate scheduled job,
+or the `triggers { cron(...) }` + `parameters` combination your Jenkins
+version supports).
+
 ## Wiring this into an actual Jenkins instance
 
 The `Jenkinsfile` makes generic assumptions since this repo has no
@@ -58,11 +104,11 @@ by a GitHub webhook or polling, if you don't want per-branch/per-PR runs.
 
 ## What this Jenkinsfile deliberately does not do
 
-- It does not build or validate the `platform-k8s/` (k3d/Kubernetes)
-  environments. Those need a real k3d cluster per run, which is a much
-  heavier CI dependency than Docker alone, and they're documented as an
-  optional, secondary way to run each lab (`platform/` stays the primary,
-  documented path) -- not something every commit needs validated.
+- It does not deploy or validate `platform-k8s/` on every build -- that's
+  the opt-in `RUN_K8S_DEPLOY_VALIDATION` stage described above, not part
+  of the default fast path. `platform/` stays the primary, documented way
+  to run each lab; `platform-k8s/` is an optional, secondary way, per
+  `platform-k8s/README.md`.
 - It does not run lab experiments/demo apps (`runProducer`,
   `runSecurityDemo`, etc.). Those are interactive, manual-exploration
   tools by design, not automated checks -- the *tests* are the automated
