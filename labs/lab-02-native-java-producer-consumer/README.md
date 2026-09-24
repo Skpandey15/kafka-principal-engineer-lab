@@ -189,6 +189,21 @@ for more detail. This is a Windows-specific Docker-detection quirk, not a
 Kafka or Testcontainers module issue — Linux/macOS Docker setups typically
 need no such override.
 
+### Kubernetes (k3d) alternative
+
+```bash
+platform-k8s/bootstrap-cluster.sh   # once
+platform-k8s/kafka/setup.sh
+```
+
+Every Gradle task below already defaults `-PbootstrapServers` to
+`localhost:9092` — the k8s environment publishes Kafka on that exact
+host port too, so every `./gradlew run...` command works unchanged
+against either environment. Topic creation via `kubectl exec` instead of
+`docker exec` — see [`platform-k8s/README.md`](../../platform-k8s/README.md)
+for the two real gotchas (internal vs. host-facing listener, Git Bash
+path mangling). Cleanup: `platform-k8s/kafka/cleanup.sh [--wipe]`.
+
 ## Commands
 
 | Gradle task | What it runs |

@@ -130,6 +130,25 @@ Kept brief — full depth is in
    **Windows + Testcontainers:** if `./gradlew test` hangs, see
    [`lab-02`'s Testcontainers troubleshooting note](../lab-02-native-java-producer-consumer/README.md#testcontainers-test-hangs-or-times-out).
 
+### Kubernetes (k3d) alternative
+
+```bash
+platform-k8s/bootstrap-cluster.sh   # once
+platform-k8s/kraft-quorum/setup.sh
+```
+
+Same three broker host ports (`localhost:9096/9097/9098`) as Docker
+Compose; controllers have no host port either way. Quorum inspection:
+`kubectl -n kraft-quorum exec deploy/kraft-quorum-broker-1 --
+//opt/kafka/bin/kafka-metadata-quorum.sh --bootstrap-server
+kraft-quorum-broker-1:19092 describe --status`. Controller failure:
+`kubectl -n kraft-quorum delete pod -l app=kafka-controller-3`
+(Kubernetes' equivalent of `docker kill`), then `kubectl -n kraft-quorum
+rollout restart deployment/kafka-controller-3` to bring it back. See
+[`platform-k8s/README.md`](../../platform-k8s/README.md) for the
+internal-listener and path-mangling gotchas. Cleanup:
+`platform-k8s/kraft-quorum/cleanup.sh [--wipe]`.
+
 ## Commands
 
 | Gradle task | Purpose |

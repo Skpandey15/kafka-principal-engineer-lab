@@ -91,6 +91,21 @@ for t in txn-lab-orders txn-lab-payments txn-lab-audit txn-lab-fencing \
 done
 ```
 
+### Kubernetes (k3d) alternative
+
+```bash
+platform-k8s/bootstrap-cluster.sh   # once
+platform-k8s/kafka-cluster/setup.sh
+```
+
+Same three host ports as Docker Compose. Topic creation:
+`kubectl -n kafka-cluster exec deploy/kafka-broker-1 --
+//opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka-broker-1:19092
+--create ...`. See
+[`platform-k8s/README.md`](../../platform-k8s/README.md) for the
+internal-listener and path-mangling gotchas. Cleanup:
+`platform-k8s/kafka-cluster/cleanup.sh [--wipe]`.
+
 ## Commands
 
 | Task | What it runs |

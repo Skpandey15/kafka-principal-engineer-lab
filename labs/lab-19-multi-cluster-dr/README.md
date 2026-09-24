@@ -50,6 +50,24 @@ own ephemeral pair of single-node Kafka clusters plus a real MM2
 process via `TwoClusterEnvironment`, torn down automatically after each
 test run.
 
+### Kubernetes (k3d) alternative
+
+The automated test suite (`./gradlew test`) always uses its own ephemeral
+Testcontainers-built two-cluster environment, regardless of platform.
+For manual exploration of the same real primary/secondary/MM2 topology
+outside the automated suite:
+
+```bash
+platform-k8s/bootstrap-cluster.sh   # once
+platform-k8s/multi-cluster-dr/setup.sh
+```
+
+Primary: `localhost:19191`. Secondary: `localhost:19192`. From inside
+either cluster's pod, use the INTERNAL listener (`localhost:19092`), not
+the host-facing one — see
+[`platform-k8s/README.md`](../../platform-k8s/README.md). Cleanup:
+`platform-k8s/multi-cluster-dr/cleanup.sh [--wipe]`.
+
 ## Architecture
 
 ```text

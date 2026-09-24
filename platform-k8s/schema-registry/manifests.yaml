@@ -1,0 +1,74 @@
+# Kubernetes equivalent of platform/schema-registry/docker-compose.yml.
+# Prerequisite: platform-k8s/kafka-cluster/setup.sh must already be applied
+# -- this references kafka-cluster's brokers by their cross-namespace FQDN,
+# the k8s equivalent of docker-compose's "external network" attachment.
+# Used by lab-09.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: schema-registry
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: schema-registry
+  namespace: schema-registry
+  labels: { app: schema-registry }
+spec:
+  replicas: 1
+  # A real, Kubernetes-specific finding: Schema Registry's internal
+  # leader-election coordinator identifies group members by their
+  # advertised host:port, which SCHEMA_REGISTRY_HOST_NAME hardcodes to
+  # "schema-registry" (safe in docker-compose, where there is only ever
+  # one container by that name). Deployment's DEFAULT RollingUpdate
+  # strategy briefly runs an old and a new pod side by side on every
+  # redeploy -- both then advertise the IDENTICAL identity and the
+  # coordinator throws "multiple members advertising the same URL" and
+  # crashes both. Recreate (like the Kafka Deployments already use)
+  # guarantees the old pod is fully gone before the new one starts.
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: schema-registry } }
+  template:
+    metadata: { labels: { app: schema-registry } }
+    spec:
+      # A real, Kubernetes-specific finding: Kubernetes auto-injects legacy
+      # "service link" env vars into every pod for every Service in its
+      # namespace -- for a Service named "schema-registry" exposing port
+      # 8081, that includes SCHEMA_REGISTRY_PORT. This image's own
+      # entrypoint treats SCHEMA_REGISTRY_PORT as a deprecated config knob
+      # and hard-exits if it's set at all, so the Service's own name
+      # collided with the app's config surface and killed every pod
+      # instantly, with almost no log output. enableServiceLinks: false
+      # disables that injection -- confirmed the hard way (traced via a
+      # throwaway debug pod running the entrypoint's `configure` script by
+      # hand, which is what pointed at the exact `if [[ -n
+      # "${SCHEMA_REGISTRY_PORT-}" ]]; then ... exit 1` check).
+      enableServiceLinks: false
+      hostname: schema-registry
+      containers:
+        - name: schema-registry
+          image: confluentinc/cp-schema-registry:7.9.2
+          ports: [{ containerPort: 8081 }]
+          env:
+            - { name: SCHEMA_REGISTRY_HOST_NAME, value: "schema-registry" }
+            - name: SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS
+              value: "PLAINTEXT://kafka-broker-1.kafka-cluster.svc.cluster.local:19092,PLAINTEXT://kafka-broker-2.kafka-cluster.svc.cluster.local:19092,PLAINTEXT://kafka-broker-3.kafka-cluster.svc.cluster.local:19092"
+            - { name: SCHEMA_REGISTRY_LISTENERS, value: "http://0.0.0.0:8081" }
+            - { name: SCHEMA_REGISTRY_KAFKASTORE_TOPIC_REPLICATION_FACTOR, value: "3" }
+          readinessProbe:
+            exec: { command: ["sh", "-c", "curl -sf http://localhost:8081/subjects"] }
+            initialDelaySeconds: 15
+            periodSeconds: 5
+            timeoutSeconds: 10
+            failureThreshold: 12
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: schema-registry
+  namespace: schema-registry
+spec:
+  type: NodePort
+  selector: { app: schema-registry }
+  ports:
+    - { name: http, port: 8081, targetPort: 8081, nodePort: 30081 }

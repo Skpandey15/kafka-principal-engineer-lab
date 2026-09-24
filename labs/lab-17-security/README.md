@@ -79,6 +79,24 @@ docker compose up -d
 # wait for the broker to report healthy
 ```
 
+### Kubernetes (k3d) alternative
+
+```bash
+platform-k8s/bootstrap-cluster.sh   # once
+platform-k8s/kafka-security/setup.sh
+```
+
+**Host port is `localhost:9196`, not Docker Compose's `9096`** — chosen
+so this environment can coexist on the shared k3d cluster with
+`kraft-quorum` without a port clash (see
+[`platform-k8s/bootstrap-cluster.sh`](../../platform-k8s/bootstrap-cluster.sh)'s
+port table). No separate `generate-certs.sh` step needed — an
+initContainer generates a fresh CA/keystore/truststore on every pod
+start, using the same commands that script runs. See
+[`platform-k8s/README.md`](../../platform-k8s/README.md) for the
+internal-listener and path-mangling gotchas. Cleanup:
+`platform-k8s/kafka-security/cleanup.sh [--wipe]`.
+
 ## Commands
 
 ```bash

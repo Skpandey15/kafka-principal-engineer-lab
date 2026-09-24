@@ -97,6 +97,20 @@ docker compose up -d
 # wait for schema-registry to report healthy: curl http://localhost:8081/subjects
 ```
 
+### Kubernetes (k3d) alternative
+
+```bash
+platform-k8s/bootstrap-cluster.sh   # once
+platform-k8s/kafka-cluster/setup.sh
+platform-k8s/schema-registry/setup.sh
+```
+
+Same host ports as Docker Compose (`localhost:9093-9095`, `localhost:8081`).
+See [`platform-k8s/README.md`](../../platform-k8s/README.md) for the
+internal-listener and path-mangling gotchas. Cleanup (in reverse order):
+`platform-k8s/schema-registry/cleanup.sh` then
+`platform-k8s/kafka-cluster/cleanup.sh [--wipe]`.
+
 ## Commands
 
 | Task | What it runs |

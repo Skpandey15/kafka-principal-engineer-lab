@@ -164,6 +164,22 @@ the entrypoint script formatting or reusing the storage at
 `/var/lib/kafka/data` under the `CLUSTER_ID` set in `docker-compose.yml`.
 Press `Ctrl+C` to stop following logs (this does not stop the container).
 
+### Kubernetes (k3d) alternative
+
+Docker Compose (above) is this lab's primary, documented environment.
+For a Kubernetes equivalent instead:
+
+```bash
+platform-k8s/bootstrap-cluster.sh   # once
+platform-k8s/kafka/setup.sh
+```
+
+Every `docker exec kafka <tool>` command in this README becomes
+`kubectl -n kafka exec deploy/kafka -- //opt/kafka/bin/<tool>` (the
+double slash keeps Git Bash on Windows from mangling the path — see
+[`platform-k8s/README.md`](../../platform-k8s/README.md)). Cleanup:
+`platform-k8s/kafka/cleanup.sh` (add `--wipe` to also delete data).
+
 ## Commands
 
 A quick reference for every CLI tool this lab uses, all invoked the same

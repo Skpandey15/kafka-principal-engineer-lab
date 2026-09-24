@@ -75,6 +75,22 @@ cd ../kafka-connect && bash fetch-plugins.sh && docker compose up -d
 (If reusing an already-initialized WP-11 volume, run
 `docker compose down -v` first -- see "Environment" above.)
 
+### Kubernetes (k3d) alternative
+
+```bash
+platform-k8s/bootstrap-cluster.sh   # once
+platform-k8s/kafka-cluster/setup.sh
+platform-k8s/kafka-connect/setup.sh
+```
+
+Same host ports as Docker Compose. The outbox tables
+(`outbox_demo_orders`, `outbox_event`) are already part of the k8s
+Postgres init ConfigMap, no separate re-init step needed. See
+[`platform-k8s/README.md`](../../platform-k8s/README.md) for the
+internal-listener and path-mangling gotchas. Cleanup (in reverse order):
+`platform-k8s/kafka-connect/cleanup.sh` then
+`platform-k8s/kafka-cluster/cleanup.sh [--wipe]`.
+
 ## Commands
 
 | Task | What it runs |
