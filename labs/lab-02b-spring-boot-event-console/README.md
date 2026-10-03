@@ -4,7 +4,7 @@
 
 - **Why this lab:** Lab-02 taught the native producer/consumer client with no framework. This lab puts the same two ideas — a producer whose callback is the only proof of durability, and a consumer whose committed offset is its only memory — behind a Spring Boot REST API, a MongoDB read model and a React UI, and hardens it the way a real service would be: idempotent writes, a dead-letter topic, outage-aware retries, non-root containers, secrets, network policies.
 - **How to run:** `platform-k8s/kafka/setup.sh` then `platform-k8s/event-console/setup.sh`, then open **http://localhost:8089**. Publish events in bulk (generated or pasted) and watch them arrive in the table. `./gradlew test` for the Testcontainers suite (real Kafka + real MongoDB).
-- **Expected input:** Docker, k3d, kubectl, JDK 21 (to build); a count and key strategy (or pasted `key|value` lines) in the UI.
+- **Expected input:** Docker, k3d, kubectl, JDK 26 (to build); a count and key strategy (or pasted `key|value` lines) in the UI.
 - **Expected output:** `1,000 of 1,000 acknowledged by Kafka` with the per-partition split the broker actually used, then the same events appearing in the consumed-events table (stored in MongoDB), filterable by key, partition and value.
 - **What we learned:** see [Principal Engineer questions](#principal-engineer-questions) and the measured [failure injection](#failure-injection) results below.
 
@@ -17,7 +17,7 @@ This lab depends on lab-02 and does not modify it. Spring Kafka itself is studie
 ## Prerequisites
 
 - The single-node Kafka from `platform-k8s/kafka/` (or any Kafka on `localhost:9092` for local runs).
-- JDK 21, Docker, k3d, kubectl. Node 22 only if you run the UI outside a container.
+- JDK 26, Docker, k3d, kubectl. Node 22 only if you run the UI outside a container.
 - Familiarity with lab-02 (callbacks, partitions, committed offsets) and lab-12 (idempotent consumer, DLQ).
 
 ## Architecture
