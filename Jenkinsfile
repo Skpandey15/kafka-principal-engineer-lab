@@ -249,7 +249,7 @@ pipeline {
                         }
                     }
 
-                    // event-console builds its own images (JDK 21 + Docker on the agent) and needs
+                    // event-console builds its own images (JDK 26 + Docker on the agent) and needs
                     // the single-node Kafka, so it gets that broker for the duration of its check.
                     try {
                         sh 'bash platform-k8s/kafka/setup.sh'
