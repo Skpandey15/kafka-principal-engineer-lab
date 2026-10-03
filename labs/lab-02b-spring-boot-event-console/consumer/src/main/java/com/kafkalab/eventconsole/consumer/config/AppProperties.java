@@ -1,9 +1,12 @@
 package com.kafkalab.eventconsole.consumer.config;
 
+import java.time.Duration;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.validation.annotation.Validated;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 
 /** Every tunable the consumer has, validated at startup so a bad value fails fast instead of at 3am. */
 @Validated
@@ -13,12 +16,51 @@ public record AppProperties(
         @Min(1) int topicPartitions,
         @Min(1) int topicReplicas,
         @Min(1) int topicMinInsyncReplicas,
-        @Min(0) int consumerMaxRetries,
         @Min(1) long consumerBackoffInitialMs,
-        @Min(1) long consumerBackoffMaxMs) {
+        @Min(1) long consumerBackoffMaxMs,
+        @NotNull Duration eventsTtl,
+        @Valid @NotNull Retry retry) {
 
-    /** Records that exhaust their retries are published here, never silently dropped. */
+    /** Events that exhaust their retries are published here, never silently dropped. */
     public String deadLetterTopic() {
         return topic + ".DLT";
+    }
+
+    /**
+     * The retry worker's settings.
+     *
+     * @param enabled          run the worker in this instance (several instances may; they share the work safely)
+     * @param maxRetries       retries after the first failed attempt; the event is DEAD when the last one fails
+     * @param backoffInitialMs wait before the first retry; doubles for each further one
+     * @param backoffMaxMs     ceiling for that wait
+     * @param pollIntervalMs   how often the worker looks for due events
+     * @param batchSize        at most this many events per poll, so a big backlog cannot starve the dead-letter sweep
+     * @param leaseMs          how long a claimed event stays invisible to other workers; must exceed one processing attempt
+     * @param dltSendTimeoutMs how long to wait for the broker to confirm a dead-letter write
+     */
+    public record Retry(
+            boolean enabled,
+            @Min(1) int maxRetries,
+            @Min(1) long backoffInitialMs,
+            @Min(1) long backoffMaxMs,
+            @Min(1) long pollIntervalMs,
+            @Min(1) int batchSize,
+            @Min(1000) long leaseMs,
+            @Min(1) long dltSendTimeoutMs) {
+
+        /** Wait before the next retry, given how many retries have already run (0 = first retry): initial, 2x, 4x ... capped. */
+        public Duration delayAfter(int retriesDone) {
+            int doublings = Math.min(Math.max(retriesDone, 0), 30);
+            long delay = backoffInitialMs << doublings;
+            if (delay <= 0 || delay > backoffMaxMs) {
+                delay = backoffMaxMs;
+            }
+            return Duration.ofMillis(delay);
+        }
+
+        /** True when a retry that just failed was the last one allowed. */
+        public boolean isExhausted(int retriesDoneIncludingThisOne) {
+            return retriesDoneIncludingThisOne >= maxRetries;
+        }
     }
 }

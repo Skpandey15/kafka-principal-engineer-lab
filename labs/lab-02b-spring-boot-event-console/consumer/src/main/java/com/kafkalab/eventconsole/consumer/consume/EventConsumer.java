@@ -1,16 +1,17 @@
 package com.kafkalab.eventconsole.consumer.consume;
 
+import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.dao.DataAccessResourceFailureException;
-import org.springframework.dao.TransientDataAccessException;
 import org.springframework.kafka.annotation.KafkaListener;
-import org.springframework.kafka.listener.BatchListenerFailedException;
 import org.springframework.stereotype.Component;
+import com.kafkalab.eventconsole.consumer.config.AppProperties;
 import com.kafkalab.eventconsole.consumer.model.EventDocument;
+import com.kafkalab.eventconsole.consumer.model.EventStatus;
+import com.kafkalab.eventconsole.consumer.process.EventProcessor;
 import com.kafkalab.eventconsole.consumer.repo.EventQueryRepository;
 import io.micrometer.core.instrument.MeterRegistry;
 
@@ -19,20 +20,40 @@ public class EventConsumer {
 
     private static final Logger log = LoggerFactory.getLogger(EventConsumer.class);
 
-    private final EventQueryRepository events;
-    private final MeterRegistry metrics;
+    /** Keeps the error text bounded: it is stored, returned by the API and rendered in the UI. */
+    static final int MAX_ERROR_LENGTH = 500;
 
-    public EventConsumer(EventQueryRepository events, MeterRegistry metrics) {
+    private final EventQueryRepository events;
+    private final EventProcessor processor;
+    private final AppProperties props;
+    private final MeterRegistry metrics;
+    private final Clock clock;
+
+    public EventConsumer(EventQueryRepository events, EventProcessor processor, AppProperties props,
+            MeterRegistry metrics, Clock clock) {
         this.events = events;
+        this.processor = processor;
+        this.props = props;
         this.metrics = metrics;
+        this.clock = clock;
     }
 
     // Batch listener: one poll() worth of records becomes one bulk write, which is
     // what makes a 10,000-event publish land in seconds instead of 10,000 round trips.
     //
-    // Delivery is at-least-once: offsets are committed only after this method returns.
-    // A crash between the Mongo write and the commit redelivers the batch, which is
-    // harmless because the write is idempotent (see EventDocument's deterministic _id).
+    // EVERY record in the batch is stored, whatever happens to it: an event that fails processing
+    // is stored as FAILED (with the reason and a retry time) instead of throwing. So a bad event
+    // never blocks its partition, never forces a batch to be replayed, and is never lost -- the
+    // offset can always be committed, because the event now lives in MongoDB, where the retry
+    // worker owns it.
+    //
+    // The only way out of this method by exception is MongoDB being unreachable. That is not the
+    // event's fault, so it is left to the error handler, which waits and retries the same batch
+    // until the database is back (see ConsumerErrorHandlingConfig).
+    //
+    // Delivery is at-least-once: offsets are committed only after this method returns. A crash
+    // between the Mongo write and the commit redelivers the batch, which is harmless because the
+    // write is idempotent (see EventDocument's deterministic _id).
     //
     // concurrency matches the partition count: one consumer thread per partition, the
     // most parallelism a consumer group can use (partition count is the ceiling).
@@ -43,45 +64,36 @@ public class EventConsumer {
 
     /** Public so tests can replay records directly and prove idempotence. Returns newly stored count. */
     public int storeBatch(List<ConsumerRecord<String, String>> records) {
-        List<EventDocument> docs = records.stream().map(EventConsumer::toDocument).toList();
-        int inserted;
-        try {
-            inserted = events.insertAllIgnoringDuplicates(docs);
-        } catch (DataAccessResourceFailureException | TransientDataAccessException outage) {
-            // The database is unavailable: this says nothing about any particular record, so
-            // do NOT hunt for a bad one (every single-record retry would fail the same way).
-            // Rethrow as-is; the error handler backs off and retries until it is back.
-            throw outage;
-        } catch (RuntimeException bulkFailure) {
-            // Something other than a duplicate went wrong. Find the exact record that
-            // can't be stored, so the error handler retries / dead-letters THAT record
-            // only and commits everything before it, instead of replaying the whole batch.
-            inserted = storeOneByOne(docs, bulkFailure);
+        Instant now = clock.instant();
+        List<EventDocument> docs = records.stream().map(record -> toDocument(record, now)).toList();
+        int inserted = events.insertAllIgnoringDuplicates(docs);
+
+        long failed = docs.stream().filter(d -> d.status() == EventStatus.FAILED).count();
+        if (failed > 0) {
+            // One line per batch, not per event: a producer sending 100,000 bad events must not
+            // drown the log. The per-event reason is stored on the event and visible in the API.
+            log.warn("{} of {} events in this batch failed processing and were queued for retry", failed, docs.size());
         }
+        // A redelivered batch is counted again here; the counters are rates for dashboards, the
+        // database is the source of truth for exact numbers.
         metrics.counter("eventconsole.consume.stored").increment(inserted);
         metrics.counter("eventconsole.consume.duplicates").increment(docs.size() - inserted);
+        metrics.counter("eventconsole.consume.failed").increment(failed);
         if (docs.size() != inserted) {
             log.debug("{} duplicate delivery(ies) ignored in a batch of {}", docs.size() - inserted, docs.size());
         }
         return inserted;
     }
 
-    private int storeOneByOne(List<EventDocument> docs, RuntimeException cause) {
-        int inserted = 0;
-        for (int i = 0; i < docs.size(); i++) {
-            try {
-                if (events.insertIfAbsent(docs.get(i))) {
-                    inserted++;
-                }
-            } catch (RuntimeException e) {
-                log.warn("Could not store {} (bulk failure: {}): {}", docs.get(i).id(), cause.getMessage(), e.getMessage());
-                throw new BatchListenerFailedException("Failed to store " + docs.get(i).id(), e, i);
-            }
+    private EventDocument toDocument(ConsumerRecord<String, String> record, Instant now) {
+        EventStatus status = EventStatus.SUCCESS;
+        String error = null;
+        try {
+            processor.process(record.key(), record.value());
+        } catch (RuntimeException e) {
+            status = EventStatus.FAILED;
+            error = describe(e);
         }
-        return inserted;
-    }
-
-    private static EventDocument toDocument(ConsumerRecord<String, String> record) {
         return new EventDocument(
                 EventDocument.idFor(record.topic(), record.partition(), record.offset()),
                 record.topic(),
@@ -90,6 +102,20 @@ public class EventConsumer {
                 record.key(),
                 record.value(),
                 Instant.ofEpochMilli(record.timestamp()),
-                Instant.now());
+                now,
+                status,
+                0,
+                error,
+                status == EventStatus.FAILED ? now.plus(props.retry().delayAfter(0)) : null,
+                null,
+                status == EventStatus.SUCCESS ? now : null,
+                null,
+                null);
+    }
+
+    /** One line, bounded: it is stored with the event, returned by the API and rendered in the UI. */
+    public static String describe(RuntimeException e) {
+        String text = e.getClass().getSimpleName() + (e.getMessage() == null ? "" : ": " + e.getMessage());
+        return text.length() <= MAX_ERROR_LENGTH ? text : text.substring(0, MAX_ERROR_LENGTH);
     }
 }

@@ -10,6 +10,8 @@
   --ok-bg: #dcfce7;
   --bad: #b91c1c;
   --bad-bg: #fee2e2;
+  --warn: #a16207;
+  --warn-bg: #fef3c7;
   --bar: #3b82f6;
   --track: #e8edf5;
   --row-alt: #f8fafc;
@@ -29,6 +31,8 @@
     --ok-bg: #12351f;
     --bad: #f87171;
     --bad-bg: #3b1818;
+    --warn: #facc15;
+    --warn-bg: #3a3012;
     --bar: #5b8def;
     --track: #243049;
     --row-alt: #1c2639;
@@ -90,6 +94,10 @@ button.danger { color: var(--bad); }
 .badge { padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
 .badge.ok { background: var(--ok-bg); color: var(--ok); }
 .badge.bad { background: var(--bad-bg); color: var(--bad); }
+.badge.warn { background: var(--warn-bg); color: var(--warn); }
+.chip.active { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+.status-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.small-btn { padding: 1px 8px; font-size: 12px; margin-left: 6px; }
 
 .bars { display: grid; gap: 5px; }
 .bar-row { display: grid; grid-template-columns: 26px 1fr 56px; gap: 8px; align-items: center; }

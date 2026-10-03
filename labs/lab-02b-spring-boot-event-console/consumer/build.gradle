@@ -1,9 +1,10 @@
 // Lab 02b -- Event Console, CONSUMER service.
 //
-// Consumes the topic into a MongoDB read model (idempotently, with a dead-letter topic for
-// records that can never be stored) and serves that read model over HTTP. It does NOT publish
-// business events: it only produces to its own dead-letter topic. Deployed, scaled and failed
-// independently of the producer service.
+// Consumes the topic into a MongoDB read model (idempotently) and serves that read model over
+// HTTP. Every event is stored with a status: an event that fails processing is kept as FAILED
+// and retried with backoff by a worker inside this service, then parked as DEAD and published to
+// a dead-letter topic. It does NOT publish business events: it only produces to that dead-letter
+// topic. Deployed, scaled and failed independently of the producer service.
 //
 // Its own Gradle project (own wrapper, own versions), like every lab. Spring Boot / Spring
 // Kafka versions match lab-14.

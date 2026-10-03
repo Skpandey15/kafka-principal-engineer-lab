@@ -3,10 +3,12 @@ import {
   clearEvents,
   getConfig,
   getEvents,
+  getConsumerConfig,
   getJobs,
   getStats,
   parsePastedLines,
   publishBulk,
+  requeueEvent,
 } from './api.js'
 
 const nf = new Intl.NumberFormat()
@@ -149,6 +151,10 @@ function PublishPanel({ config, onPublished }) {
         ) : (
           <label>
             <span>One event per line — <code>key|value</code>, or just a value for no key</span>
+            <span className="muted small">
+              Values must be JSON objects. Anything else is accepted by Kafka but fails processing: it is
+              retried with backoff, then marked DEAD and sent to the dead-letter topic.
+            </span>
             <textarea rows="9" value={pasted} onChange={(e) => setPasted(e.target.value)} spellCheck="false" />
             <span className="muted">{nf.format(pastedEvents.length)} event(s) parsed</span>
           </label>
@@ -199,8 +205,26 @@ function Jobs({ jobs }) {
   )
 }
 
-function EventsPanel({ config, stats, refreshKey, onCleared }) {
-  const [filters, setFilters] = useState({ key: '', partition: '', q: '' })
+const STATUSES = ['SUCCESS', 'FAILED', 'DEAD']
+
+function StatusBadge({ ev, maxRetries }) {
+  const retryNote =
+    ev.status === 'FAILED'
+      ? `retry ${ev.retries + 1}/${maxRetries ?? '?'} due ${new Date(ev.nextRetryAt).toLocaleTimeString()}`
+      : ev.retries > 0
+        ? `${ev.retries} retr${ev.retries === 1 ? 'y' : 'ies'}`
+        : ''
+  const cls = ev.status === 'SUCCESS' ? 'ok' : ev.status === 'FAILED' ? 'warn' : 'bad'
+  return (
+    <span title={ev.lastError ?? ''}>
+      <span className={`badge ${cls}`}>{ev.status}</span>
+      {retryNote && <span className="muted small"> {retryNote}</span>}
+    </span>
+  )
+}
+
+function EventsPanel({ config, consumerConfig, stats, refreshKey, onCleared }) {
+  const [filters, setFilters] = useState({ key: '', partition: '', q: '', status: '' })
   const [page, setPage] = useState(0)
   const [size, setSize] = useState(25)
   const [data, setData] = useState({ items: [], total: 0 })
@@ -235,6 +259,17 @@ function EventsPanel({ config, stats, refreshKey, onCleared }) {
     onCleared()
   }
 
+  async function requeue(id) {
+    try {
+      await requeueEvent(id)
+      setErr('')
+      load()
+      onCleared()
+    } catch (e) {
+      setErr(e.message)
+    }
+  }
+
   return (
     <section className="card">
       <div className="events-head">
@@ -254,6 +289,18 @@ function EventsPanel({ config, stats, refreshKey, onCleared }) {
         <div className="stat-bars"><Bars counts={stats.byPartition} partitions={config?.partitions ?? 0} /></div>
       </div>
 
+      <div className="status-chips" role="group" aria-label="Filter by status">
+        <button type="button" className={filters.status === '' ? 'chip active' : 'chip'} onClick={() => update({ status: '' })}>
+          All
+        </button>
+        {STATUSES.map((s) => (
+          <button type="button" key={s} className={filters.status === s ? 'chip active' : 'chip'}
+            onClick={() => update({ status: filters.status === s ? '' : s })}>
+            {s} · {nf.format(stats.byStatus?.[s] ?? 0)}
+          </button>
+        ))}
+      </div>
+
       <div className="filters">
         <input placeholder="Filter by key…" value={filters.key} onChange={(e) => update({ key: e.target.value })} />
         <select value={filters.partition} onChange={(e) => update({ partition: e.target.value })}>
@@ -270,11 +317,11 @@ function EventsPanel({ config, stats, refreshKey, onCleared }) {
       <div className="table-wrap">
         <table>
           <thead>
-            <tr><th>Consumed</th><th>P</th><th>Offset</th><th>Key</th><th>Value</th></tr>
+            <tr><th>Consumed</th><th>P</th><th>Offset</th><th>Key</th><th>Value</th><th>Status</th></tr>
           </thead>
           <tbody>
             {data.items.length === 0 ? (
-              <tr><td colSpan="5" className="empty">No events match. Publish some on the left.</td></tr>
+              <tr><td colSpan="6" className="empty">No events match. Publish some on the left.</td></tr>
             ) : (
               data.items.map((ev) => (
                 <tr key={ev.id}>
@@ -283,6 +330,15 @@ function EventsPanel({ config, stats, refreshKey, onCleared }) {
                   <td className="mono">{ev.offset}</td>
                   <td className="mono">{ev.key ?? <em className="muted">null</em>}</td>
                   <td className="mono value" title={ev.value}>{ev.value}</td>
+                  <td className="nowrap">
+                    <StatusBadge ev={ev} maxRetries={consumerConfig?.maxRetries} />
+                    {ev.status === 'DEAD' && (
+                      <button type="button" className="ghost small-btn" onClick={() => requeue(ev.id)}
+                        title={ev.lastError ?? ''}>
+                        Requeue
+                      </button>
+                    )}
+                  </td>
                 </tr>
               ))
             )}
@@ -306,7 +362,8 @@ function EventsPanel({ config, stats, refreshKey, onCleared }) {
 
 export default function App() {
   const [config, setConfig] = useState(null)
-  const [stats, setStats] = useState({ total: 0, byPartition: {} })
+  const [consumerConfig, setConsumerConfig] = useState(null)
+  const [stats, setStats] = useState({ total: 0, byPartition: {}, byStatus: {} })
   const [jobs, setJobs] = useState([])
   const [refreshKey, setRefreshKey] = useState(0)
   const [online, setOnline] = useState(true)
@@ -323,6 +380,7 @@ export default function App() {
   }, [])
 
   useEffect(() => { getConfig().then(setConfig).catch(() => setOnline(false)) }, [])
+  useEffect(() => { getConsumerConfig().then(setConsumerConfig).catch(() => setOnline(false)) }, [])
   useEffect(() => {
     refreshSide()
     const t = setInterval(refreshSide, 2000)
@@ -349,7 +407,7 @@ export default function App() {
           <Jobs jobs={jobs} />
         </div>
         <div className="col-right">
-          <EventsPanel config={config} stats={stats} refreshKey={refreshKey} onCleared={bump} />
+          <EventsPanel config={config} consumerConfig={consumerConfig} stats={stats} refreshKey={refreshKey} onCleared={bump} />
         </div>
       </main>
     </div>

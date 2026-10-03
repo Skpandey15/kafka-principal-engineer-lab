@@ -197,7 +197,7 @@ spec:
             - { name: tmp, mountPath: /tmp }
       containers:
         - name: producer
-          image: kafkalab/event-console-producer:0.2.0
+          image: kafkalab/event-console-producer:0.3.0
           imagePullPolicy: IfNotPresent
           ports: [{ name: http, containerPort: 8080 }]
           env:
@@ -285,7 +285,7 @@ spec:
             - { name: tmp, mountPath: /tmp }
       containers:
         - name: consumer
-          image: kafkalab/event-console-consumer:0.2.0
+          image: kafkalab/event-console-consumer:0.3.0
           imagePullPolicy: IfNotPresent
           ports: [{ name: http, containerPort: 8080 }]
           env:
@@ -351,7 +351,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: frontend
-          image: kafkalab/event-console-frontend:0.2.0
+          image: kafkalab/event-console-frontend:0.3.0
           imagePullPolicy: IfNotPresent
           ports: [{ name: http, containerPort: 8080 }]
           env:

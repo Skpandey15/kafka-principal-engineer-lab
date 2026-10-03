@@ -14,6 +14,7 @@ import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.stereotype.Repository;
 import com.kafkalab.eventconsole.consumer.model.EventDocument;
+import com.kafkalab.eventconsole.consumer.model.EventStatus;
 
 @Repository
 public class EventQueryRepository {
@@ -24,20 +25,13 @@ public class EventQueryRepository {
     private record PartitionCount(Integer id, long count) {
     }
 
+    private record StatusCount(String id, long count) {
+    }
+
     private final MongoTemplate mongo;
 
     public EventQueryRepository(MongoTemplate mongo) {
         this.mongo = mongo;
-    }
-
-    /** Idempotent insert: returns false (and stores nothing) if this exact (topic, partition, offset) is already there. */
-    public boolean insertIfAbsent(EventDocument doc) {
-        try {
-            mongo.insert(doc);
-            return true;
-        } catch (org.springframework.dao.DuplicateKeyException e) {
-            return false;
-        }
     }
 
     /**
@@ -70,7 +64,7 @@ public class EventQueryRepository {
 
     private static final int DUPLICATE_KEY = 11000;
 
-    public Page search(String key, Integer partition, String text, int page, int size) {
+    public Page search(String key, Integer partition, String text, EventStatus status, int page, int size) {
         Criteria criteria = new Criteria();
         List<Criteria> parts = new java.util.ArrayList<>();
         if (key != null && !key.isBlank()) {
@@ -81,6 +75,9 @@ public class EventQueryRepository {
         }
         if (text != null && !text.isBlank()) {
             parts.add(Criteria.where("value").regex(Pattern.quote(text.trim()), "i"));
+        }
+        if (status != null) {
+            parts.add(Criteria.where("status").is(status.name()));
         }
         if (!parts.isEmpty()) {
             criteria = new Criteria().andOperator(parts);
@@ -107,6 +104,19 @@ public class EventQueryRepository {
         mongo.aggregate(agg, EventDocument.class, PartitionCount.class)
                 .getMappedResults()
                 .forEach(r -> out.put(String.valueOf(r.id()), r.count()));
+        return out;
+    }
+
+    /** Every status is present, with 0 when there are none, so a dashboard never has to guess. */
+    public Map<String, Long> countByStatus() {
+        Map<String, Long> out = new java.util.LinkedHashMap<>();
+        for (EventStatus status : EventStatus.values()) {
+            out.put(status.name(), 0L);
+        }
+        Aggregation agg = Aggregation.newAggregation(Aggregation.group("status").count().as("count"));
+        mongo.aggregate(agg, EventDocument.class, StatusCount.class)
+                .getMappedResults()
+                .forEach(r -> out.put(r.id() == null ? EventStatus.SUCCESS.name() : r.id(), r.count()));
         return out;
     }
 

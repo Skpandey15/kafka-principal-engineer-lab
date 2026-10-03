@@ -29,17 +29,17 @@ flowchart LR
     Nginx -->|"/api/events/*"| C["CONSUMER service"]
     P -->|"send, wait for every ack"| Kafka[("Kafka<br/>event-console, 3 partitions")]
     Kafka -->|"@KafkaListener (batch)"| C
-    Kafka -.->|"poison records"| DLT[("event-console.DLT")]
-    C -->|"bulk insert, idempotent"| ReadModel[("MongoDB<br/>eventconsole_consumer<br/>user: consumer")]
+    C -.->|"DEAD events (after 5 failed retries)"| DLT[("event-console.DLT")]
+    C -->|"bulk insert, idempotent, with status"| ReadModel[("MongoDB<br/>eventconsole_consumer<br/>user: consumer")]
     P -->|"audit log"| Audit[("MongoDB<br/>eventconsole_producer<br/>user: producer")]
 ```
 
 | | **Producer** (`producer/`) | **Consumer** (`consumer/`) |
 |---|---|---|
 | Job | Publish events on request; record what Kafka acknowledged | Consume the topic into a read model; serve it |
-| HTTP | `GET /api/config`, `POST /api/publish/bulk`, `GET /api/jobs` | `GET /api/events`, `/api/events/stats`, `/api/events/config`, `DELETE /api/events` |
+| HTTP | `GET /api/config`, `POST /api/publish/bulk`, `GET /api/jobs` | `GET /api/events` (`?status=`), `/api/events/stats`, `/api/events/config`, `POST /api/events/{id}/requeue`, `DELETE /api/events` |
 | Kafka | Produces to `event-console` | Consumes `event-console`; produces **only** to `event-console.DLT` |
-| MongoDB | database `eventconsole_producer`, collection `publish_jobs` (TTL 30d) | database `eventconsole_consumer`, collection `events` (TTL 7d) |
+| MongoDB | database `eventconsole_producer`, collection `publish_jobs` (TTL 30d) | database `eventconsole_consumer`, collection `events` (SUCCESS events expire after 7d; FAILED and DEAD never do) |
 | DB user | `producer` — `readWrite` on its own database only | `consumer` — `readWrite` on its own database only |
 | Scale | Stateless: scale horizontally | Up to the partition count (3); more replicas would idle |
 
@@ -53,7 +53,10 @@ Each is its **own Gradle project** (own wrapper, own `build.gradle`, own image, 
 | Database per service | Each service owns its data; the other cannot read or write it, enforced by MongoDB users rather than convention. |
 | Read model | A query-friendly copy of event data; Kafka remains the source of truth, so the copy may expire and be rebuilt by replaying the topic. |
 | Idempotent write | Storing the same Kafka record twice leaves one document — the `_id` is `topic-partition-offset`, the record's only globally unique address. |
-| Outage vs. poison | "The database is down" and "this record is bad" need different handling: wait, versus dead-letter. |
+| Outage vs. bad event | "The database is down" and "this event is bad" need different handling: wait and retry the same batch, versus record the failure and move on. |
+| Failure as data | An event that fails processing is stored as `FAILED` with the reason and a retry time, so its Kafka offset can be committed and its partition never blocks. |
+| Retry worker | A scheduler inside the consumer that retries `FAILED` events with exponential backoff and parks them as `DEAD` after the last allowed retry. |
+| Lease | A worker claims an event with one atomic update that hides it from other workers for a while; a worker that dies simply lets the lease run out. |
 
 ## Setup
 
@@ -131,7 +134,52 @@ What segregation changed, and why each piece is where it is:
 | NetworkPolicies: MongoDB only from the two services; each service only from nginx | The producer and consumer cannot call each other — they only share the topic. |
 | `wait-for-mongo` init container authenticates as the service's own user | It waits for MongoDB *and* for the Job to have created the user, so first deploys don't crash-loop. |
 
-Everything from the single-app version still applies per service: callbacks awaited (never `send()` alone), `acks=all` + idempotence + `lz4`, validated and size-capped input with no free-form topic, batch idempotent consumer with per-record failure isolation, outage → retry forever vs. poison → bounded retries then DLT, TTL'd collections, graceful shutdown, non-root read-only containers, correct framework status codes.
+Everything from the single-app version still applies per service: callbacks awaited (never `send()` alone), `acks=all` + idempotence + `lz4`, validated and size-capped input with no free-form topic, a batch idempotent consumer, TTL'd collections, graceful shutdown, non-root read-only containers, correct framework status codes. How failures are handled changed — see the next section.
+
+## Failure handling: status, retry worker, dead letters
+
+Every consumed event is stored as **one document** whose `status` only moves forward:
+
+```mermaid
+stateDiagram-v2
+    [*] --> SUCCESS: processing passes
+    [*] --> FAILED: processing fails
+    FAILED --> SUCCESS: a retry succeeds
+    FAILED --> FAILED: a retry fails (backoff doubles)
+    FAILED --> DEAD: the 5th retry fails
+    DEAD --> FAILED: operator requeues
+```
+
+**What counts as a failure.** The consumer applies a processing step to each event before accepting it (`EventProcessor`). Today the step is the smallest real contract: *the value must be a JSON object*. The producer service lets a user paste arbitrary text, so a non-JSON value is a realistic bad event. A proper schema (Schema Registry) would replace that one class, not the machinery around it.
+
+**The three paths**
+
+| What went wrong | What the consumer does | Who owns it next |
+|---|---|---|
+| The event fails processing | Stores it as `FAILED` (payload, reason, `nextRetryAt`) in the **same bulk write** as its neighbours, and commits the offset. The partition never blocks and nothing is replayed. | The retry worker |
+| MongoDB is unreachable | The listener throws; the error handler waits (500 ms doubling to 5 s) and retries **the same batch forever**. Nothing is skipped, dead-lettered or counted against any event. Lag grows — that is the alert. | Kafka (the offset is not committed) |
+| A retry keeps failing | The worker retries at 5 s, 10 s, 20 s, 40 s, 80 s (capped at 5 min). When the 5th retry fails the event becomes `DEAD`, then is published to `event-console.DLT` with headers (`x-event-id`, `x-retries`, `x-last-error`, original topic/partition/offset). | An operator: `POST /api/events/{id}/requeue` (the *Requeue* button) gives it a fresh budget |
+
+**Why the retry worker lives inside the consumer, not as a third application.** The events and their state belong to the consumer's database. A separate retry application would need credentials for that database (undoing database-per-service) or its own copy of the data (and a cross-database move that cannot be atomic). Instead the worker is a scheduled component of the consumer; any number of consumer instances can run one, because they share the work safely:
+
+| Guarantee | How |
+|---|---|
+| Two workers never take the same event | Claiming is one atomic `findAndModify` that stamps `lockedUntil`. |
+| A worker that dies loses nothing | Its lease expires and the event becomes claimable again. |
+| A worker that was paused past its lease cannot overwrite the worker that took over | Every transition is conditional on the state *and retry count* it claimed; a stale update matches nothing. |
+| An outage does not burn retries | If MongoDB is unreachable the attempt cannot be recorded, so it is not counted. |
+| No event is left half-moved | One event is one document; every transition is one single-document update — no transaction needed. |
+| `DEAD` is never silently deleted | The TTL index is **partial** (`status = SUCCESS` only). A plain TTL index would expire failed events too. |
+| An existing database upgrades safely | On startup the old all-statuses TTL index is dropped, `status` is back-filled on older events, and a changed TTL is applied in place. |
+
+**Honest limits**
+
+- **Processing is at-least-once.** If a worker dies after processing but before recording the result, the event runs once more. `EventProcessor` implementations must be idempotent.
+- **The dead-letter topic is at-least-once too.** `DEAD` is committed in MongoDB first and the topic is written second, then confirmed (`dltPublished`). A broker outage leaves it unconfirmed and it is written later; a crash between the write and the confirmation can produce a duplicate. Each record carries `x-event-id` so a reader of the DLT can de-duplicate. Requeueing does not delete the old DLT copy.
+- **Retrying a deterministic failure cannot succeed.** A non-JSON value fails five times and dies. Retries earn their keep for transient causes (a downstream call, a rule not yet deployed); for permanent ones they only delay the verdict. `DEAD` + requeue is how a fixed deployment recovers them.
+- **Ordering is not preserved for a failed event.** It is processed after later events with the same key.
+- **`DEAD` events accumulate** until an operator requeues them or clears the read model. Nothing deletes them automatically — on purpose.
+- **Rolling upgrade overlap:** an old-version pod running beside a new one stores events without `status`; they are back-filled at the next restart. Rolling *back* to the old version re-creates the old TTL index, which would start expiring failed events — do not roll back without dropping it.
 
 ## Expected output
 
@@ -150,6 +198,7 @@ and 1,000 new rows in the table within a couple of seconds — five distinct key
 - [ ] http://localhost:8089 shows "Backend connected"; publishing works; the table fills.
 - [ ] `kubectl -n event-console get secret` lists `event-console-mongo`, `producer-mongo`, `consumer-mongo`.
 - [ ] In each of `producer/` and `consumer/`: `./gradlew build` passes.
+- [ ] A pasted non-JSON event shows `FAILED`, then `DEAD` after 5 retries, and exactly one record appears on `event-console.DLT`.
 
 ## Experiment
 
@@ -157,6 +206,8 @@ and 1,000 new rows in the table within a couple of seconds — five distinct key
 2. **Take the producer down, keep reading.** Scale it to 0: the table keeps serving, publishing returns 502 until it is back.
 3. **Rebuild the read model.** Click *Clear*, scale the consumer to 0, reset its group (`kafka-consumer-groups.sh --reset-offsets --to-earliest --group event-console-consumer --topic event-console --execute` in the Kafka pod), scale back to 1: the whole history is replayed.
 4. **Try to cross the boundary.** Connect to MongoDB as the `producer` user and read the consumer's database — `Unauthorized`.
+5. **Publish a bad event.** In *Paste events* enter `bad-1|this is not json`. Within seconds it appears with status `FAILED`; click the *DEAD* chip about three minutes later and it is there, `5 retries`, with the reason on hover. Read `event-console.DLT` (headers included) in Kafbat UI, then click *Requeue* and watch it go through the schedule again.
+6. **Break MongoDB while events are retrying.** Publish 100 bad events, `kubectl -n event-console scale deploy/mongo --replicas=0` for a minute, scale it back: every event still ends `DEAD` with exactly 5 retries.
 
 ## Failure injection
 
@@ -189,7 +240,31 @@ final: stored=232103  expected=232103   lag=0   DLT=0   (all pods 0 restarts)
 
 Caveat, stated plainly: I cannot prove each of the three kills landed *mid-batch* — only that three forced kills occurred during the drain window and the final count was exact. The no-duplicates guarantee is proven deterministically by the consumer's integration test that stores a batch mixing an already-stored record with new ones.
 
-**Poison record and database outage** (consumer integration tests, real Kafka + MongoDB): one record MongoDB rejects every time, between two good ones — the good ones are stored, the bad one lands on `event-console.DLT`. A simulated MongoDB outage longer than the retry budget stores every record and dead-letters none, because outages are retried indefinitely while poison records are not.
+**Bad events, through the real producer API** (20 valid JSON events and 5 plain-text ones, final 0.3.0 images, the existing 232,203-event database upgraded in place):
+
+```text
+upgrade:  legacy index ttl_consumedAt dropped; ttl_success_consumedAt created, partial {"status":"SUCCESS"}, 604800s
+          events with no status field: 0   (all 232,203 back-filled to SUCCESS)
+consume:  SUCCESS 232,223   FAILED 5   (the 20 valid events stored normally)
+retries:  retries seen on the 5 FAILED events over time: 0 -> 2 (t+16s) -> 3 (t+47s) -> 4 (t+79s) -> DEAD at t+171s
+final:    5 events DEAD, retries=5, dltPublished=true;  event-console.DLT: exactly 5 new records, with
+          x-event-id, x-original-*, x-retries=5 and x-last-error headers
+requeue:  POST .../requeue -> 200, event back to FAILED retries=0;  again -> 404;  unknown id -> 404
+```
+
+**Two retry workers + a MongoDB outage + a force-killed consumer, while 100 events are being retried.** The consumer was scaled to 2 replicas, 100 plain-text events published, then at t+22s MongoDB was scaled to 0 for 60 s, at t+53s one consumer pod was force-deleted (`--force --grace-period=0`), and MongoDB came back at t+84s:
+
+```text
+all 100 reached DEAD at t+224s:   {"status":"DEAD","retries":5,"dltPublished":true}  x 100
+                                  -> no event retried more than 5 times, none lost, none stuck
+event-console.DLT:                100 records for these events, 100 unique keys (no duplicate)
+                                  (+1 record: the event requeued above died again; requeueing does not delete its old DLT copy)
+pods:                             all Ready, 0 restarts
+```
+
+What this does and does not prove, stated plainly: it shows the claim/lease/conditional-update rules hold under a real outage and a real kill with two workers — the retry counts are exact. It cannot prove that the kill landed in the narrow window between "dead letter written" and "dead letter confirmed", which is the only place a duplicate DLT record can come from; no duplicate occurred in this run. That window is covered deterministically instead: the integration test makes the broker refuse the first three dead-letter writes and checks the event stays unconfirmed, is written later, and appears exactly once.
+
+**Integration tests** (real Kafka + MongoDB containers) additionally prove: 8 concurrent claimers split 200 events with no duplicate and no miss; a claimed event is invisible until its lease expires; a worker that lost its lease cannot overwrite the worker that took over; outage attempts are not counted against an event's retries; and MongoDB's real TTL monitor deletes old `SUCCESS` events while old `FAILED` and `DEAD` ones survive the same pass.
 
 **Isolation verified on the cluster:**
 
@@ -230,7 +305,7 @@ platform-k8s/event-console/cleanup.sh --wipe   # deletes the namespace: data AND
 | Done | Not done (and what a real deployment adds) |
 |---|---|
 | Two independently deployable services with their own data and credentials | **A contract for the events.** The payload is free text; a schema registry (lab-09) with compatibility checks is what lets the two teams evolve independently without breaking each other. |
-| Idempotent, batch, outage-aware consumer with a DLT | **Authentication/authorization on the API and UI.** Anyone who can reach port 8089 can publish. Put it behind an identity-aware proxy / OIDC. |
+| Idempotent, batch, outage-aware consumer; failures stored as status, retried with backoff, then DEAD + DLT | **Authentication/authorization on the API and UI.** Anyone who can reach port 8089 can publish or requeue. Put it behind an identity-aware proxy / OIDC. |
 | Validated inputs, size caps, no free-form topic | **Rate limiting** on `POST /api/publish/bulk`. |
 | Non-root, read-only FS, NetworkPolicies, per-service Secrets | **TLS** between tiers and to Kafka/MongoDB (this lab's Kafka is PLAINTEXT; see lab-17 for SASL_SSL). Secrets in a real secret manager, with rotation. |
 | Health probes, graceful shutdown, resource limits | **High availability**: one replica of each; MongoDB is a single instance, not a replica set. Add replicas + PodDisruptionBudgets. |
@@ -249,3 +324,7 @@ platform-k8s/event-console/cleanup.sh --wipe   # deletes the namespace: data AND
 6. Both services declare the topic. What could go wrong if their declarations ever disagree, and how would you prevent it?
 7. nginx routes `/api/events` to the consumer. What happens to a client that was written against the old single backend, and how would you version the API to evolve the two independently?
 8. The dead-letter topic belongs to the consumer. Who should own the process for reading and replaying it, and what does replaying a DLT record safely require?
+9. `FAILED` events live in MongoDB instead of a Kafka retry topic. What did that buy (visibility, a requeue button, backoff control, no partition blocking) and what did it cost (ordering, a new at-least-once boundary, a dependency on the database being up to record a failure)?
+10. The retry worker shares the consumer's database instead of being its own application. Under what conditions would you split it out anyway, and what would that force you to add?
+11. An event fails five times because of a validation rule that was too strict, and you fix the rule. Walk through recovering the dead events — what must be true for requeueing hundreds of them to be safe?
+12. Why is the TTL index partial? What would have happened to a week-old `DEAD` event with a plain TTL index, and who would have noticed?
