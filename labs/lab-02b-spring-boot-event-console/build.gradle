@@ -1,0 +1,62 @@
+// Lab 02b -- Spring Boot Event Console.
+//
+// Lab-02 taught the native producer/consumer client with no framework. This
+// project takes the same two ideas -- a producer whose callback is the only
+// source of truth, and a consumer whose committed offset is its only memory --
+// and puts them behind a Spring Boot REST API, a MongoDB read model and a
+// React UI, so you can publish events in bulk and watch them arrive.
+//
+// Same one-project-per-lab convention (own Gradle wrapper, own versions) as
+// every other lab. Spring Boot / Spring Kafka versions match lab-14.
+
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '4.1.1'
+    id 'io.spring.dependency-management' version '1.1.7'
+}
+
+group = 'com.kafkalab'
+version = '0.1.0'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-webmvc'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    // Boot 4 bundles spring-kafka + the spring.kafka.* autoconfiguration
+    // (spring-boot-kafka) in one starter; lab-14 wires the two by hand to
+    // show why the second artifact exists.
+    implementation 'org.springframework.boot:spring-boot-starter-kafka'
+    implementation 'org.springframework.boot:spring-boot-starter-data-mongodb'
+
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+
+    // Real broker + real MongoDB in the tests -- never a mocked
+    // KafkaTemplate or an embedded fake database as the primary strategy.
+    testImplementation 'org.testcontainers:testcontainers:2.0.5'
+    testImplementation 'org.testcontainers:testcontainers-junit-jupiter:2.0.5'
+    testImplementation 'org.testcontainers:testcontainers-kafka:2.0.5'
+    testImplementation 'org.testcontainers:testcontainers-mongodb:2.0.5'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+    timeout = java.time.Duration.ofMinutes(8)
+    testLogging {
+        events = ['passed', 'skipped', 'failed']
+        exceptionFormat = 'full'
+    }
+}
+
+tasks.named('bootJar') {
+    archiveFileName = 'event-console.jar'
+}

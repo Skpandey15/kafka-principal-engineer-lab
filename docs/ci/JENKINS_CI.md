@@ -20,7 +20,7 @@ That's exactly what a CI agent needs: give it Docker and a JDK, and
 
 | Category | Labs | What the pipeline does |
 |---|---|---|
-| Self-contained (Testcontainers/embedded) | lab-02 through lab-09, lab-12, lab-13, lab-14, lab-16, lab-18, lab-19 (14 labs) | `./gradlew test` on a Docker-capable agent. Nothing else. |
+| Self-contained (Testcontainers/embedded) | lab-02, lab-02b, lab-03 through lab-09, lab-12, lab-13, lab-14, lab-16, lab-18, lab-19 (15 projects) | `./gradlew test` on a Docker-capable agent. Nothing else. lab-02b also gets a separate `lab-02b-frontend-build` branch (`npm ci && npm run build` in a throwaway `node:22-alpine` container) because its React UI is not covered by Gradle. |
 | Needs `platform/kafka-connect/plugins/` pre-populated | lab-10, lab-11 | Run `platform/kafka-connect/fetch-plugins.sh` once (downloads the pinned Debezium Postgres connector + connect-file plugin), then `./gradlew test`. The Jenkinsfile does this once and `stash`/`unstash`es the result into both branches rather than downloading it twice. |
 | Needs an already-running `platform/*/docker-compose.yml` environment | lab-15, lab-17 | `docker compose up -d` the environment the test suite expects (kafka-cluster + observability for lab-15; kafka-security, with certs generated first, for lab-17), `./gradlew test`, then `docker compose down -v` in a `finally` block so the environment never lingers on the agent. |
 | Not automated | lab-01 | A CLI-only walkthrough with no Gradle project -- nothing to run. |
@@ -35,7 +35,7 @@ them into the same pattern as the other 16.
 ## `platform-k8s/` (k3d) deploy validation -- opt-in
 
 A separate stage, `k3d deploy validation (platform-k8s/)`, deploys every
-`platform-k8s/*` environment to a real k3d cluster and treats that
+`platform-k8s/*` environment (including `event-console`, which builds its own images and so needs JDK 21 + Docker on the agent) to a real k3d cluster and treats that
 environment's own `setup.sh` (which already does `kubectl apply` + wait
 for real pod readiness, per
 [`platform-k8s/_lib/common.sh`](../../platform-k8s/_lib/common.sh)) as

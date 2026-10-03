@@ -66,6 +66,7 @@ export KUBECONFIG=~/.kube/config-kafka-lab.yaml
 | `kafka-security/` | `platform/kafka-security/` | lab-17 (standalone) |
 | `multi-cluster-dr/` | lab-19's own `TwoClusterEnvironment` (no docker-compose counterpart) | lab-19 (standalone) |
 | `kafka-ui/` | `platform/kafka-ui/` | optional, secondary tooling at http://localhost:8088. Browses `kafka-cluster/` by default; `KAFKA_UI_TARGET=kafka platform-k8s/kafka-ui/setup.sh` browses the single-node `kafka/` broker instead (one JVM, for memory-constrained machines). `schema-registry/` optional |
+| `event-console/` | lab-02b (no docker-compose counterpart) | lab-02b: React UI + Spring Boot API + MongoDB at http://localhost:8089 (needs `kafka/`; builds its own images — JDK 21 + Docker required) |
 
 Each environment directory has:
 

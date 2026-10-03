@@ -29,6 +29,7 @@
 
 def selfContainedLabs = [
     'lab-02-native-java-producer-consumer',
+    'lab-02b-spring-boot-event-console',
     'lab-03-partitioning-ordering',
     'lab-04-consumer-groups-rebalancing',
     'lab-05-offset-management-delivery-semantics',
@@ -170,6 +171,21 @@ pipeline {
                         }
                     }
 
+                    // lab-02b's React UI: the Gradle test above covers the backend only.
+                    // This proves the UI still installs from its lockfile and builds. Runs
+                    // in a throwaway node container as the agent's own user, so nothing in
+                    // the workspace ends up root-owned.
+                    branches['lab-02b-frontend-build'] = {
+                        node('docker') {
+                            checkout scm
+                            sh '''
+                                docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+                                  -v "$PWD/labs/lab-02b-spring-boot-event-console/frontend:/app" -w /app \
+                                  node:22-alpine sh -c "npm ci --no-audit --no-fund && npm run build"
+                            '''
+                        }
+                    }
+
                     // Not self-contained via Testcontainers -- deliberately, same
                     // reason lab-17 documents ("Why not Testcontainers here"):
                     // observability needs a real, persistent JMX-exporting broker
@@ -231,6 +247,20 @@ pipeline {
                         if (!deployValidateWipe(env)) {
                             failed << env
                         }
+                    }
+
+                    // event-console builds its own images (JDK 21 + Docker on the agent) and needs
+                    // the single-node Kafka, so it gets that broker for the duration of its check.
+                    try {
+                        sh 'bash platform-k8s/kafka/setup.sh'
+                        if (!deployValidateWipe('event-console')) {
+                            failed << 'event-console'
+                        }
+                    } catch (e) {
+                        failed << 'kafka (for event-console)'
+                        echo "FAILED: platform-k8s/kafka/setup.sh did not reach ready state: ${e}"
+                    } finally {
+                        sh 'bash platform-k8s/kafka/cleanup.sh --wipe || true'
                     }
 
                     try {
