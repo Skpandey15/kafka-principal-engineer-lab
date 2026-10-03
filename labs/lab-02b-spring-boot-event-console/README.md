@@ -194,7 +194,7 @@ Caveat, stated plainly: I cannot prove each of the three kills landed *mid-batch
 |---|---|
 | UI says "Backend unreachable" | API pod not ready: `kubectl -n event-console get pods`, then `logs deploy/event-console-backend`. |
 | `502 Bad Gateway` on `/api` | nginx cannot resolve the backend. `BACKEND_UPSTREAM` must be fully qualified (`…event-console.svc.cluster.local`) — nginx's resolver ignores search domains. |
-| API crashes at start: `delivery.timeout.ms should be equal to or larger than linger.ms + request.timeout.ms` | Producer timeout settings in `application.properties` violate Kafka's rule. |
+| API crashes at start: `delivery.timeout.ms should be equal to or larger than linger.ms + request.timeout.ms` | Producer timeout settings in `application.yml` violate Kafka's rule. |
 | API crash-loops on first deploy with `MongoTimeoutException` | MongoDB still initializing. The init container normally prevents this; check it ran. |
 | `port 8089` not reachable | Cluster created before this lab: `setup.sh` adds it with `k3d cluster edit … --port-add`; or recreate with `bootstrap-cluster.sh`. |
 | Events show but counts exceed what you published | The topic already held records; a fresh MongoDB + a *new* consumer group replays them. |

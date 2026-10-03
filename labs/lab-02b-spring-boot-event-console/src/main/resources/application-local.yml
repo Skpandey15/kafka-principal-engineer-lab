@@ -7,11 +7,17 @@
 #                           (this lab folder), no authentication
 #
 # Point it elsewhere without editing this file:  KAFKA_BOOTSTRAP=...  MONGODB_URI=...
-spring.kafka.bootstrap-servers=${KAFKA_BOOTSTRAP:localhost:9092}
-spring.mongodb.uri=${MONGODB_URI:mongodb://localhost:27017/eventconsole}
+spring:
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+  mongodb:
+    uri: ${MONGODB_URI:mongodb://localhost:27017/eventconsole}
 
-app.topic-partitions=3
-app.topic-replicas=1
-app.topic-min-insync-replicas=1
+app:
+  topic-partitions: 3
+  topic-replicas: 1
+  topic-min-insync-replicas: 1
 
-logging.level.com.kafkalab=DEBUG
+logging:
+  level:
+    com.kafkalab: DEBUG

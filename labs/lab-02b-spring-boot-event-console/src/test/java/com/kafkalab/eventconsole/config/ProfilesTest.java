@@ -5,13 +5,15 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.context.properties.bind.Bindable;
+import org.springframework.boot.context.properties.bind.Binder;
 import org.springframework.boot.test.context.ConfigDataApplicationContextInitializer;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.core.env.ConfigurableEnvironment;
 import org.springframework.core.env.Environment;
 
 /**
- * Loads the real application*.properties for each profile and checks that they bind to the
+ * Loads the real application*.yml for each profile and checks that they bind to the
  * validated AppProperties and say what the profile promises. No Docker, no broker, no database:
  * this guards the CONFIGURATION, so a typo in a profile fails the build instead of a deploy.
  */
@@ -130,5 +132,31 @@ class ProfilesTest {
                 StartupConfigValidator.validate((ConfigurableEnvironment) ctx.getEnvironment()));
         // local has defaults for everything: nothing required.
         runner.run(ctx -> StartupConfigValidator.validate((ConfigurableEnvironment) ctx.getEnvironment()));
+    }
+
+    @Test
+    void dottedKafkaClientKeysInYamlBindAsExactKafkaPropertyNames() {
+        // YAML nests `producer.properties` -> `delivery.timeout.ms`; Spring must hand the Kafka
+        // client the literal key "delivery.timeout.ms", not a nested structure.
+        runner.run(ctx -> {
+            Binder binder = Binder.get(ctx.getEnvironment());
+            var producer = binder.bind("spring.kafka.producer.properties", Bindable.mapOf(String.class, String.class)).get();
+            assertThat(producer).containsEntry("delivery.timeout.ms", "30000")
+                    .containsEntry("request.timeout.ms", "15000")
+                    .containsEntry("linger.ms", "10")
+                    .containsEntry("max.block.ms", "15000")
+                    .containsEntry("enable.idempotence", "true");
+            var consumer = binder.bind("spring.kafka.consumer.properties", Bindable.mapOf(String.class, String.class)).get();
+            assertThat(consumer).containsEntry("max.poll.interval.ms", "300000");
+        });
+
+        runner.withPropertyValues("spring.profiles.active=aws", "KAFKA_BOOTSTRAP=b:9096",
+                "KAFKA_SASL_JAAS_CONFIG=x", "MONGODB_URI=mongodb://u:p@h/db").run(ctx -> {
+                    var kafka = Binder.get(ctx.getEnvironment())
+                            .bind("spring.kafka.properties", Bindable.mapOf(String.class, String.class)).get();
+                    assertThat(kafka).containsEntry("security.protocol", "SASL_SSL")
+                            .containsEntry("sasl.mechanism", "SCRAM-SHA-512")
+                            .containsEntry("sasl.jaas.config", "x");
+                });
     }
 }

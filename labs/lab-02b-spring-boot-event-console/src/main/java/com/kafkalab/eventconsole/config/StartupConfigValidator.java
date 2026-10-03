@@ -43,7 +43,7 @@ public final class StartupConfigValidator {
         if (!problems.isEmpty()) {
             throw new IllegalStateException("Missing required configuration for profile(s) "
                     + String.join(", ", env.getActiveProfiles()) + ":\n  - " + String.join("\n  - ", problems)
-                    + "\nSet the environment variables named above (see application-<profile>.properties).");
+                    + "\nSet the environment variables named above (see application-<profile>.yml).");
         }
     }
 }

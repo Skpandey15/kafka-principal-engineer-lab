@@ -127,7 +127,7 @@ spec:
           imagePullPolicy: IfNotPresent
           ports: [{ name: http, containerPort: 8080 }]
           env:
-            # The `k3d` profile (application-k3d.properties) supplies the in-cluster Kafka listener
+            # The `k3d` profile (application-k3d.yml) supplies the in-cluster Kafka listener
             # (kafka.kafka.svc.cluster.local:19092 -- NOT localhost:9092, the host-facing one) and
             # the single-node topic settings. Only what varies per deployment is set here.
             - { name: SPRING_PROFILES_ACTIVE, value: "k3d" }
