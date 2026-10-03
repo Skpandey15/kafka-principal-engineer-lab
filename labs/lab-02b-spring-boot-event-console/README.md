@@ -3,10 +3,10 @@
 ## Quick Summary
 
 - **Why this lab:** Lab-02 taught the native producer/consumer client with no framework. This lab turns those two halves into **two separately deployable Spring Boot services** — a *producer* that publishes events in bulk, and a *consumer* that stores them in a MongoDB read model — behind one React UI. They share nothing but the Kafka topic: separate code, separate builds, separate databases, separate database users, separate failure domains.
-- **How to run:** `platform-k8s/kafka/setup.sh` then `platform-k8s/event-console/setup.sh`, then open **http://localhost:8089**. Publish events in bulk (generated or pasted) and watch them arrive in the table. Each service builds and tests on its own: `cd producer && ./gradlew build`, `cd consumer && ./gradlew build`.
+- **How to run:** `platform-k8s/kafka/setup.sh` then `platform-k8s/event-console/setup.sh`, then open **http://localhost:8089** and sign in (`platform-k8s/event-console/credentials.sh` prints the generated logins). Publish events in bulk (generated or pasted) and watch them arrive in the table. Each service builds and tests on its own: `cd producer && ./gradlew build`, `cd consumer && ./gradlew build`. The default stack runs two replicas of each service and a Schema Registry — about 1.5 GB of memory in total; `SINGLE_REPLICA=1 ./setup.sh` runs one of each on a small machine.
 - **Expected input:** Docker, k3d, kubectl; a count and key strategy (or pasted `key|value` lines) in the UI. Gradle downloads JDK 26 itself.
 - **Expected output:** `1,000 of 1,000 acknowledged by Kafka` with the per-partition split the broker actually used — then the same events appearing in the consumed-events table, filterable by key, partition and value.
-- **What we learned:** a producer and a consumer that share only a topic really can fail and scale independently — the producer keeps accepting writes while the consumer is down and the backlog waits safely in Kafka, the read side keeps serving while the producer is down — and a database-per-service with least-privilege users is enforced by the database, not by good intentions. See [Failure injection](#failure-injection) for the measured results.
+- **What we learned:** a producer and a consumer that share only a topic really can fail and scale independently — the producer keeps accepting writes while the consumer is down and the backlog waits safely in Kafka, the read side keeps serving while the producer is down — and a database-per-service with least-privilege users is enforced by the database, not by good intentions. Production-grade then means more than splitting: an **explicit event contract** held in a Schema Registry (a bad event is refused at the edge, and a breaking schema change is refused by the registry), **failures as data** (status, retry worker, dead letters, never a blocked partition), **a login and rate limits** at the edge, **alerts that are tested**, and **two replicas of everything** (plus an opt-in MongoDB replica set) — each shown working, and failing, in [Failure injection](#failure-injection).
 
 ## Objective
 
@@ -24,14 +24,18 @@ This lab builds on [lab-02](../lab-02-native-java-producer-consumer/README.md) (
 
 ```mermaid
 flowchart LR
-    Browser["Browser<br/>React UI"] -->|":8089"| Nginx["nginx<br/>(static files + routing)"]
-    Nginx -->|"/api/config, /api/publish/*, /api/jobs"| P["PRODUCER service"]
-    Nginx -->|"/api/events/*"| C["CONSUMER service"]
-    P -->|"send, wait for every ack"| Kafka[("Kafka<br/>event-console, 3 partitions")]
+    Browser["Browser<br/>React UI"] -->|":8089, login"| Nginx["nginx x2<br/>(login, rate limits,<br/>static files, routing)"]
+    Nginx -->|"/api/config, /api/publish/*, /api/jobs"| P["PRODUCER x2"]
+    Nginx -->|"/api/events/*"| C["CONSUMER x2<br/>(each runs a retry worker)"]
+    P -->|"check every event first,<br/>then send, wait for every ack"| Kafka[("Kafka<br/>event-console, 3 partitions")]
+    P -.->|"latest schema"| SR["Schema Registry<br/>subject event-console-value"]
     Kafka -->|"@KafkaListener (batch)"| C
+    C -.->|"schema by id (cached)"| SR
     C -.->|"DEAD events (after 5 failed retries)"| DLT[("event-console.DLT")]
     C -->|"bulk insert, idempotent, with status"| ReadModel[("MongoDB<br/>eventconsole_consumer<br/>user: consumer")]
     P -->|"audit log"| Audit[("MongoDB<br/>eventconsole_producer<br/>user: producer")]
+    Prom["Prometheus (optional)<br/>+ alert rules"] -.->|"/actuator/prometheus"| P
+    Prom -.-> C
 ```
 
 | | **Producer** (`producer/`) | **Consumer** (`consumer/`) |
@@ -57,6 +61,10 @@ Each is its **own Gradle project** (own wrapper, own `build.gradle`, own image, 
 | Failure as data | An event that fails processing is stored as `FAILED` with the reason and a retry time, so its Kafka offset can be committed and its partition never blocks. |
 | Retry worker | A scheduler inside the consumer that retries `FAILED` events with exponential backoff and parks them as `DEAD` after the last allowed retry. |
 | Lease | A worker claims an event with one atomic update that hides it from other workers for a while; a worker that dies simply lets the lease run out. |
+| Event contract | A JSON Schema, versioned in a Schema Registry, that every event must satisfy. The producer checks before sending; the consumer checks against the version the event names. |
+| Closed content model | `additionalProperties: false`: an event may carry only the declared fields. A misspelt field becomes a refused event instead of silently lost data — and it is what lets the registry's BACKWARD rule allow a new *optional* field later. |
+| Compatibility rule | The registry refuses to register a new schema version that would break the rule (here BACKWARD: data written under the old version must still be valid under the new one). |
+| Edge | nginx in front of both services: it authenticates, authorises by role, rate-limits writes and strips credentials before proxying. |
 
 ## Setup
 
@@ -66,7 +74,7 @@ platform-k8s/kafka/setup.sh
 platform-k8s/event-console/setup.sh      # builds 2 jars + 3 images, imports them, deploys
 ```
 
-`setup.sh` generates three random passwords on first run — MongoDB `root`, and one per service — stores each only in a Kubernetes Secret, and never prints or commits them. A Job then creates the two least-privilege MongoDB users (idempotent, so it also works against an existing volume). `SKIP_BUILD=1` reuses the images. The images are tagged `0.2.0`; **bump the tag when you change code**, otherwise Kubernetes sees an unchanged manifest and keeps running the old image (or run `kubectl -n event-console rollout restart deploy/<name>`).
+`setup.sh` generates random passwords on first run — MongoDB `root`, one per service, and the two UI logins (`viewer`, `operator`) — stores each only in a Kubernetes Secret, and never prints or commits them (`credentials.sh` prints the two UI logins when you ask). A Job then creates the two least-privilege MongoDB users (idempotent, so it also works against an existing volume), the Schema Registry starts, and `contracts/register.sh` registers the event contract before the services take traffic. Switches: `SKIP_BUILD=1` reuses the images; `SINGLE_REPLICA=1` runs one replica of each service instead of two; `MONGO_HA=1` runs MongoDB as a three-member replica set. The images are tagged `0.4.2`; **bump the tag when you change code**, otherwise Kubernetes sees an unchanged manifest and keeps running the old image (or run `kubectl -n event-console rollout restart deploy/<name>`).
 
 ### Layout
 
@@ -181,6 +189,59 @@ stateDiagram-v2
 - **`DEAD` events accumulate** until an operator requeues them or clears the read model. Nothing deletes them automatically — on purpose.
 - **Rolling upgrade overlap:** an old-version pod running beside a new one stores events without `status`; they are back-filled at the next restart. Rolling *back* to the old version re-creates the old TTL index, which would start expiring failed events — do not roll back without dropping it.
 
+## The event contract (Schema Registry)
+
+Until now "what is a valid event" was whatever the consumer happened to tolerate. It is now a versioned **JSON Schema** (`platform-k8s/event-console/contracts/event-v1.json`) held in a Confluent-compatible **Schema Registry** (subject `event-console-value`, compatibility `BACKWARD`).
+
+```mermaid
+sequenceDiagram
+    participant U as Sender
+    participant P as Producer
+    participant R as Schema Registry
+    participant K as Kafka
+    participant C as Consumer
+    U->>P: POST /api/publish/bulk
+    P->>R: latest version of the subject (cached 60s, last known kept if the registry is down)
+    P->>P: check EVERY event
+    alt any event breaks the contract
+        P-->>U: 422, which line and why, NOTHING published
+    else all valid
+        P->>K: records, each with header x-schema-id = 2
+        K->>C: batch
+        C->>R: GET /schemas/ids/2 (immutable, cached for good)
+        C->>C: check each event against the schema it NAMES
+    end
+```
+
+| Design decision | Why |
+|---|---|
+| The producer rejects the **whole request** if one event is bad | The sender is still there to be told, and nobody has to work out which of 10,000 events got through. The cheapest place to stop a bad event is before it exists in Kafka. |
+| Records carry the registry id in an `x-schema-id` **header**; the value stays plain JSON | Any tool can still read the topic (Kafbat UI, `kafka-console-consumer`). The cost, stated plainly: this is not the Confluent wire format (magic byte + id inside the value), so the Confluent serializers cannot read these records. |
+| The consumer checks each event against the version **it names**, not the latest | A schema id is immutable, so it is fetched once and cached for good: a registry outage cannot affect any event whose schema has been seen. |
+| An event with no header, an unknown id, or a violation is **FAILED** (then retried, then DEAD) | The consumer is the last line of defence against producers that bypass the service. It never trusts the edge. |
+| A registry that is **unreachable** is not an event's fault | The consumer waits (like a MongoDB outage) — nothing is failed or dropped; the retry worker leaves the event alone and counts no attempt; the producer keeps enforcing the last version it knew, and refuses to publish only if it has never obtained one. |
+| The services **only read** the registry | Registering a version is a reviewed step with a compatibility check (`contracts/register.sh`, run by `setup.sh` and by CI), never something a running service does. |
+| The content model is **closed** (`additionalProperties: false`) | A misspelt field becomes a refused event, not lost data. It is also what makes the registry's `BACKWARD` rule allow adding an *optional* field later: in an open model the registry (correctly) calls that incompatible, because old data could already carry a field of that name with any type. |
+
+**Changing the contract.** `contracts/check-compat.sh <file>` asks the registry whether a candidate is compatible with the latest version *without* registering it (exit 0 / 1, usable in CI); `contracts/register.sh <file>` registers it and is refused (HTTP 409) if it is not. `contracts/examples/` has one of each: `event-v2-compatible.json` adds an optional `customerId`; `event-v3-breaking.json` adds a *required* `region`, which data written under v1 cannot satisfy. Evolving a BACKWARD contract means: register the new version, upgrade **consumers** first, then producers.
+
+**Honest limits.**
+
+- **Introducing a contract breaks replaying old history.** Events published before it have no `x-schema-id`, so replaying them fails every one (observed: replaying the topic after the contract existed turned 125 pre-contract test events into `FAILED`, then `DEAD`). Decide a policy *before* replaying — backfill a header, or treat header-less records as a named legacy schema — rather than discovering it in production. (Existing documents win on replay, so already-stored events are untouched.)
+- **JSON Schema only, and one subject.** No Avro/Protobuf, no per-key subjects, no schema references.
+- **`aws` profile:** the client speaks the Confluent REST API. AWS Glue Schema Registry has a different API and is not supported.
+- **No authentication** on the registry (it is reachable only from the two services by NetworkPolicy), and the registry is a single replica.
+
+## Running it for real: access, limits, alerts, replay
+
+**Access.** nginx requires a login for everything except the health probe. Two accounts, generated by `setup.sh` into the `event-console-auth` Secret and printed only by `platform-k8s/event-console/credentials.sh`: **viewer** (read) and **operator** (read, publish, requeue, clear). The role is decided by the HTTP method, credentials are stripped before the request is proxied, and writes are rate-limited at 5/s (burst 10) per client address. Honest limits: this is HTTP Basic over plain HTTP — put TLS in front of it before anyone you do not trust can see the traffic; the limit is per client *address*, so behind a NAT or load balancer that rewrites addresses it becomes effectively global; and the services themselves do no authentication (they are reachable only from nginx, by NetworkPolicy). A real deployment replaces Basic with OIDC at an identity-aware proxy; nothing in the services would change. `frontend/test-nginx.sh` tests all of this against the real image.
+
+**Alerts.** Both services expose `/actuator/prometheus` (every series tagged with its `application`). `platform-k8s/event-console/alerts/event-console.rules.yml` has nine alerts, each with the action to take in its description: consumer or producer down (including *disappeared*, which `up == 0` alone would miss), consumer lag, DEAD events, a FAILED backlog, dead letters not reaching Kafka, the Schema Registry unreachable, Kafka not acknowledging publishes, and the status gauges going stale because MongoDB is unreachable. The rules are unit-tested with `promtool` (`alerts/test.sh`, also a CI branch). `alerts/enable.sh` starts a small Prometheus that scrapes every pod and evaluates them, so you can watch them fire (`kubectl -n event-console port-forward svc/prometheus 9090:9090`). **Not included:** Alertmanager or any notification — routing alerts to people is deployment-specific.
+
+**Replaying the dead-letter queue.** The `DEAD` documents *are* the queue; `event-console.DLT` holds a notification copy of each. So "replay" is **requeue**: `POST /api/events/{id}/requeue`, or in bulk `POST /api/events/requeue-dead?limit=1000` (the UI's *Requeue DEAD* button): oldest first, bounded at 10,000, and each event gets a fresh retry budget. The retry worker then drains them at its own pace, so one click cannot flood a downstream that has only just recovered. Re-publishing DLT records to the source topic is deliberately *not* offered: it would create a second, unrelated copy of the event (a new offset, a new `_id`) next to the `DEAD` one.
+
+**High availability.** The manifests run **two replicas** of the producer, consumer and nginx, with `maxUnavailable: 0` rollouts, a topology spread constraint and a PodDisruptionBudget for each, so a pod can die or be rolled without a visible gap (measured below). The consumer's two replicas share the three partitions and both run a retry worker. MongoDB is a single instance by default; `MONGO_HA=1 ./setup.sh` runs it as a **three-member replica set** (keyfile authentication, `w=majority` in the services' connection strings, a PodDisruptionBudget of 2). What stays single: Kafka itself (this is the one-node lab broker), the Schema Registry, and — on this one-node k3d cluster — the *node*, so a node failure still takes everything down. Switching MongoDB modes starts with an empty database (the other mode's volume is left untouched); rebuild the read model by replaying the topic.
+
 ## Expected output
 
 Publishing 1,000 events (5 cycled keys) in the UI:
@@ -194,11 +255,13 @@ and 1,000 new rows in the table within a couple of seconds — five distinct key
 
 ## Verification
 
-- [ ] `platform-k8s/event-console/setup.sh` finishes; mongo, producer, consumer and frontend `1/1 Ready` with `0` restarts.
-- [ ] http://localhost:8089 shows "Backend connected"; publishing works; the table fills.
-- [ ] `kubectl -n event-console get secret` lists `event-console-mongo`, `producer-mongo`, `consumer-mongo`.
-- [ ] In each of `producer/` and `consumer/`: `./gradlew build` passes.
-- [ ] A pasted non-JSON event shows `FAILED`, then `DEAD` after 5 retries, and exactly one record appears on `event-console.DLT`.
+- [ ] `platform-k8s/event-console/setup.sh` finishes; mongo, schema-registry, and two each of producer, consumer and frontend are `Ready` with `0` restarts, and it printed `Latest version of 'event-console-value': "version":1 …`.
+- [ ] http://localhost:8089 asks for a login (`credentials.sh`); as *operator* it shows "Backend connected" and a `v1 · schema N` contract badge; publishing works; the table fills.
+- [ ] `kubectl -n event-console get secret` lists `event-console-mongo`, `producer-mongo`, `consumer-mongo`, `event-console-auth`.
+- [ ] In each of `producer/` and `consumer/`: `./gradlew build` passes. `frontend/test-nginx.sh` and `platform-k8s/event-console/alerts/test.sh` pass (Docker only).
+- [ ] A pasted event with a typo'd field is refused with a 422 naming the line and the field, and nothing from that request is published.
+- [ ] A record sent to Kafka directly, without an `x-schema-id` header, shows `FAILED`, then `DEAD` after 5 retries, and exactly one record appears on `event-console.DLT`.
+- [ ] `contracts/check-compat.sh contracts/examples/event-v3-breaking.json` exits non-zero; `…/event-v2-compatible.json` exits 0.
 
 ## Experiment
 
@@ -206,8 +269,12 @@ and 1,000 new rows in the table within a couple of seconds — five distinct key
 2. **Take the producer down, keep reading.** Scale it to 0: the table keeps serving, publishing returns 502 until it is back.
 3. **Rebuild the read model.** Click *Clear*, scale the consumer to 0, reset its group (`kafka-consumer-groups.sh --reset-offsets --to-earliest --group event-console-consumer --topic event-console --execute` in the Kafka pod), scale back to 1: the whole history is replayed.
 4. **Try to cross the boundary.** Connect to MongoDB as the `producer` user and read the consumer's database — `Unauthorized`.
-5. **Publish a bad event.** In *Paste events* enter `bad-1|this is not json`. Within seconds it appears with status `FAILED`; click the *DEAD* chip about three minutes later and it is there, `5 retries`, with the reason on hover. Read `event-console.DLT` (headers included) in Kafbat UI, then click *Requeue* and watch it go through the schedule again.
-6. **Break MongoDB while events are retrying.** Publish 100 bad events, `kubectl -n event-console scale deploy/mongo --replicas=0` for a minute, scale it back: every event still ends `DEAD` with exactly 5 retries.
+5. **Get a bad event past the edge.** The service will not publish one, so send it straight to Kafka, like any other producer could: `printf '{"id":"raw-1"}\n' | kubectl -n kafka exec -i deploy/kafka -- /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server localhost:9092 --topic event-console`. It has no `x-schema-id` header, so within seconds it shows `FAILED`; click the *DEAD* chip about three minutes later and it is there, `5 retries`, with the reason on hover. Read `event-console.DLT` (headers included) in Kafbat UI, then click *Requeue* and watch it go through the schedule again.
+6. **Break MongoDB while events are retrying.** Send 100 header-less records the same way, `kubectl -n event-console scale deploy/mongo --replicas=0` for a minute, scale it back: every event still ends `DEAD` with exactly 5 retries.
+7. **Break the Schema Registry.** `kubectl -n event-console scale deploy/schema-registry --replicas=0`: publishing still works (the producer keeps the last contract it knew), the consumer keeps storing events whose schema it has seen, and an event naming a schema it has *not* seen waits instead of failing. Scale it back and the waiting event is stored by itself.
+8. **Evolve the contract.** `SUBJECT=event-console-demo contracts/register.sh contracts/event-v1.json`, then `check-compat.sh` on the two files in `contracts/examples/`: one is compatible, one is not, and `register.sh` refuses the breaking one.
+9. **Lose a pod under load.** Publish continuously (a loop of `curl`s as *operator*) and `kubectl delete pod` one pod of each service, one at a time, with and without `--force --grace-period=0`: no request fails, and what Kafka acknowledged equals what is stored.
+10. **Lose the MongoDB primary.** `MONGO_HA=1 ./setup.sh`, then force-delete the primary pod (`rs.hello().primary` tells you which) while publishing: a new primary is elected, the services keep working, nothing is lost.
 
 ## Failure injection
 
@@ -266,6 +333,69 @@ What this does and does not prove, stated plainly: it shows the claim/lease/cond
 
 **Integration tests** (real Kafka + MongoDB containers) additionally prove: 8 concurrent claimers split 200 events with no duplicate and no miss; a claimed event is invisible until its lease expires; a worker that lost its lease cannot overwrite the worker that took over; outage attempts are not counted against an event's retries; and MongoDB's real TTL monitor deletes old `SUCCESS` events while old `FAILED` and `DEAD` ones survive the same pass.
 
+### Production hardening — measured on the k3d cluster (images 0.4.2, real Schema Registry, two replicas)
+
+**The edge and the contract**, through the real API with the generated logins:
+
+```text
+UI without a login 401 · wrong user 401 · /healthz without a login 200 · viewer reads 200
+viewer publishes / requeues / clears: 401 each · operator publishes 200
+
+contract in the registry:   subject event-console-value, BACKWARD, version 1 (schema id 2)
+a valid publish:            acked 5/5, stored 5/5, each stored event reports schemaId "2" (it travelled in the Kafka header)
+a request with 1 good and 2 bad events:  HTTP 422, nothing published (the good one is NOT on the topic)
+    #2  /seq: must have a minimum value of 0; (the event): required property 'id' not found
+    #3  value is not valid JSON: Unrecognized token 'plain' ...
+a record sent to Kafka directly:        no header   -> FAILED "event has no x-schema-id header, so it declares no contract"
+                                        header 999  -> FAILED "schema id 999 is not registered"
+compatibility (demo subject):           v2 adds an optional field -> COMPATIBLE (exit 0)
+                                        v3 adds a required field  -> INCOMPATIBLE (exit 1); registering it is refused
+40 quick publishes:         32 accepted, 8 refused with 429
+```
+
+The edge also has its own test against the real image (`frontend/test-nginx.sh`, 20 checks: the same matrix, credentials stripped before proxying, 429s on writes and none on reads).
+
+**A Schema Registry outage, with Prometheus watching** (alerts enabled, registry scaled to 0, then back):
+
+```text
+producer, registry down:     publish still 200 (it keeps the contract it knew); log: "Could not refresh the contract, continuing with version 1"
+a record naming a schema the consumer had never seen:   not stored, not failed — the consumer waits (lag 1, FAILED unchanged)
+metric:                      eventconsole_contract_unavailable_total grew ~11.7 in 2 min
+alert EventConsoleContractUnavailable:   pending at t+67s -> firing at t+178s (its rule says "for 2m")
+registry back:               the waiting record was stored by itself as SUCCESS
+consumer scaled to 0:        EventConsoleConsumerDown  inactive -> pending (t+47s) -> firing (t+174s)
+9 rules loaded; all four pods scraped (up)
+```
+
+**Losing a pod of every service while a client publishes 20-event batches for 80 s** (graceful deletes of a producer, an nginx and a consumer pod, a force-kill of another producer and of a consumer pod):
+
+```text
+client:   171 requests, 171 HTTP 200, 0 failures
+Kafka acknowledged 3,420 events;  stored 3,420  (no loss, no duplicate)
+all pods Ready afterwards, 0 restarts of the survivors
+```
+
+**MongoDB as a three-member replica set** (`MONGO_HA=1`; one replica of each service to fit in memory; a primary force-killed while a client published for 75 s):
+
+```text
+formed:   mongo-0 PRIMARY, mongo-1 SECONDARY, mongo-2 SECONDARY; both services connected through the replica-set URI
+killed:   the primary (mongo-0, --force --grace-period=0);  mongo-1 became primary;  mongo-0 rejoined as SECONDARY
+client:   128 requests, 128 HTTP 200
+written to Kafka during the test: 2,560   stored in the replica set: 2,560
+then:     switching back to a single instance left the original database intact (235,710 events at that moment, then healed to the full 238,495 by replaying the topic in about a minute)
+```
+
+I did **not** measure the election time (my timing probe was wrong, so the figure is not reported), and the one-node cluster means all three members share a node — this proves the failover logic, not node-level availability.
+
+**Things the live runs found that the unit and integration tests could not:**
+
+- MongoDB was OOM-killed during the one-off back-fill of the 232,000-event collection. The back-fill now runs in 5,000-document chunks, and the container has 768 MiB.
+- The Schema Registry image's user is named (`appuser`), so a `runAsNonRoot` pod needs a numeric `runAsUser`.
+- nginx's `limit_except` silently skips the `set` that picks the upstream, so every non-GET request failed with a 500. Choosing the password file by request method fixed it, and `test-nginx.sh` now guards it.
+- The registry's BACKWARD rule called "add an optional field" incompatible while the content model was open — the model had to be closed (see the contract section).
+- `setup.sh` waited on MongoDB's *pods* after a change to its spec and got pinned to the terminating old one; it now waits on the rollout.
+- Replaying the topic after the contract existed turned pre-contract events into `FAILED` (see the contract section's limits).
+
 **Isolation verified on the cluster:**
 
 ```text
@@ -292,6 +422,15 @@ producer -> consumer : BLOCKED        consumer -> producer : BLOCKED
 | Service exits at start naming `MONGODB_URI` | The `k3d`/`aws` profile requires it; the manifest injects it from the service's Secret. |
 | `Unauthorized` from MongoDB after a redeploy | The service user is created by the `mongo-users` Job; re-run `setup.sh` (it recreates the Job) or check `kubectl -n event-console logs job/mongo-users`. |
 | New code but the old behaviour in the cluster | Same image tag, unchanged manifest: bump the version in `setup.sh`/`manifests.yaml`, or `rollout restart`. |
+| The browser asks for a password | That is the edge. `platform-k8s/event-console/credentials.sh` prints the `viewer` and `operator` logins. |
+| `429` on publishing | The write rate limit (5/s, burst 10 per client address). Slow down; it clears within a second. |
+| Publishing returns `422` | An event breaks the contract; the body names the line and the field. Nothing from that request was published. |
+| Publishing returns `503` "event contract is unavailable" | The Schema Registry cannot be reached and this producer has never obtained the contract: `kubectl -n event-console get pods -l app=schema-registry`. (A producer that already has one keeps working.) |
+| Events appear as `FAILED` with "no x-schema-id header" | They were sent to Kafka by something other than the producer service (a console producer, an old client), or they are pre-contract events being replayed. |
+| `schema-registry` pod: `CreateContainerConfigError … non-numeric user` | The manifest must give the pod a numeric `runAsUser` (it does: 1000); you edited it out. |
+| After `MONGO_HA=1` (or back) the table is empty | Switching modes starts with an empty database; the other mode's data is untouched. Rebuild by resetting the consumer group to the earliest offset (Experiment 3). |
+| `setup.sh` fails at the contract step with HTTP 409 | `event-v1.json` is not compatible with the version already registered. Run `contracts/check-compat.sh contracts/event-v1.json` to see why; an unreleased draft can be removed with `DELETE /subjects/event-console-value` (twice, the second with `?permanent=true`). |
+| Memory pressure: pods `OOMKilled`, probes timing out, WSL unresponsive | The default stack is about 1.5 GB. `SINGLE_REPLICA=1 ./setup.sh`, or scale Kafbat UI to 0 (`kubectl -n kafka-ui scale deploy/kafka-ui --replicas=0`). |
 
 ## Cleanup
 
@@ -302,17 +441,18 @@ platform-k8s/event-console/cleanup.sh --wipe   # deletes the namespace: data AND
 
 ## Production considerations
 
-| Done | Not done (and what a real deployment adds) |
+| Done (and verified, see above) | Not done — what a real deployment adds |
 |---|---|
-| Two independently deployable services with their own data and credentials | **A contract for the events.** The payload is free text; a schema registry (lab-09) with compatibility checks is what lets the two teams evolve independently without breaking each other. |
-| Idempotent, batch, outage-aware consumer; failures stored as status, retried with backoff, then DEAD + DLT | **Authentication/authorization on the API and UI.** Anyone who can reach port 8089 can publish or requeue. Put it behind an identity-aware proxy / OIDC. |
-| Validated inputs, size caps, no free-form topic | **Rate limiting** on `POST /api/publish/bulk`. |
-| Non-root, read-only FS, NetworkPolicies, per-service Secrets | **TLS** between tiers and to Kafka/MongoDB (this lab's Kafka is PLAINTEXT; see lab-17 for SASL_SSL). Secrets in a real secret manager, with rotation. |
-| Health probes, graceful shutdown, resource limits | **High availability**: one replica of each; MongoDB is a single instance, not a replica set. Add replicas + PodDisruptionBudgets. |
-| Metrics counters (`eventconsole.*`) at `/actuator/metrics` | **A metrics pipeline** (Prometheus scrape + alerts on consumer lag and DLT growth — the signals that matter here). |
-| Synchronous bulk publish, bounded to 50,000 events | **Async jobs** (return 202 + job id) for much larger batches. |
+| Two independently deployable services with their own data and credentials | **Separate MongoDB clusters** if the services need isolation of resources and blast radius, not only of data. Today both databases live on one server (or one replica set). |
+| An explicit event contract in a Schema Registry: refused at the edge, enforced again by the consumer, compatibility-checked on change | **A wire format other tools can decode** (the Confluent magic byte), **Avro/Protobuf**, schema references, and a **header-less policy** for replaying history from before the contract. The registry is a single unauthenticated replica. |
+| Idempotent, batch, outage-aware consumer; failures stored as status, retried with backoff, then DEAD + DLT; bulk requeue | **Exactly-once effects.** Processing and the dead-letter topic are at-least-once; processors must be idempotent. |
+| A login with two roles, per-method authorisation, credentials stripped before proxying, rate-limited writes (tested against the real image) | **TLS** (this is Basic over plain HTTP), **OIDC** at an identity-aware proxy, per-user (not per-address) limits, and authentication *between* services. |
+| Nine alert rules, unit-tested with `promtool`, and a Prometheus that evaluates them on real metrics | **Alertmanager and routing** to people; **consumer-group lag from the broker's point of view** (`kafka-exporter`) rather than only the consumer's own gauge; dashboards. |
+| Two replicas of every service, safe rollouts, disruption budgets, a spread constraint; an opt-in 3-member MongoDB replica set whose primary was killed under load | **More than one node.** On the one-node cluster a node failure still takes everything down. Kafka is one broker; the registry is one pod. Replica-set **election time was not measured**. |
+| A real Jenkins ran the pipeline for lab-02b (144 tests recorded, green) | The other 16 labs, the k3d deploy stage, agents with real credentials, a multibranch job. |
+| Non-root, read-only FS where the image allows, NetworkPolicies, per-service Secrets | **Secrets in a secret manager, with rotation.** Kafka here is PLAINTEXT (see lab-17 for SASL_SSL). |
+| Validated inputs, size caps, no free-form topic | **Async jobs** (202 + job id) for batches much larger than the 50,000-event synchronous publish; the producer's audit record is saved *after* the publish, so a MongoDB failure at that instant loses the audit row, not the events. |
 | Topic auto-created at startup | **Topic provisioning as code** (partition count and replication are capacity decisions, not app startup side effects). |
-| Producer and consumer share one MongoDB *server* | **Separate MongoDB clusters** if the two services need isolation of resources and blast radius, not only of data. |
 
 ## Principal Engineer questions
 
@@ -328,3 +468,11 @@ platform-k8s/event-console/cleanup.sh --wipe   # deletes the namespace: data AND
 10. The retry worker shares the consumer's database instead of being its own application. Under what conditions would you split it out anyway, and what would that force you to add?
 11. An event fails five times because of a validation rule that was too strict, and you fix the rule. Walk through recovering the dead events — what must be true for requeueing hundreds of them to be safe?
 12. Why is the TTL index partial? What would have happened to a week-old `DEAD` event with a plain TTL index, and who would have noticed?
+13. The producer refuses a whole request if one event is bad, and the consumer re-checks anyway. Why both? What would you lose by keeping only the edge check — and what would you lose by keeping only the consumer's?
+14. The contract is closed (`additionalProperties: false`) and the rule is BACKWARD. Walk through adding an optional field in production: which service is upgraded first, and what breaks if it is the other one?
+15. The consumer validates each event against the schema id *it names*, not the latest. What does that make possible during a registry outage, and what attack or mistake does it open (an event naming an old, looser schema)?
+16. You introduced the contract after a million events already existed. What happens when someone replays the topic, and what are your options (backfill headers, a named legacy schema, a cut-over offset)? Which would you choose and why?
+17. A client's address is the rate-limit key, and the cluster's load balancer rewrites every address to one. What did you actually build, and what is the minimum change that gives each *user* a limit?
+18. Both consumer replicas run a retry worker and report the same status gauges. Which alert expressions need `max` rather than `sum`, and what goes wrong if you pick the wrong one?
+19. The MongoDB replica set survived losing a primary on a one-node cluster. What does that test prove, and what does it not?
+20. Your CI controller is also its only agent and has no login. List what a production Jenkins adds, and which of the problems found by running this pipeline for real (plugin id, local checkout, host-path bind mounts, loopback ports) would have shown up only on a real agent fleet.

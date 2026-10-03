@@ -1,0 +1,181 @@
+# Unit tests for the alert rules: feed them time series, assert what fires and what does not.
+rule_files:
+  - event-console.rules.yml
+evaluation_interval: 1m
+
+tests:
+  # ---- the consumer / producer being down -------------------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'up{job="event-console-consumer"}'
+        values: '1 1 1 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 4m          # down for 1 minute: not yet
+        alertname: EventConsoleConsumerDown
+        exp_alerts: []
+      - eval_time: 7m          # down for 4 minutes: fires
+        alertname: EventConsoleConsumerDown
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations:
+              summary: The Event Console consumer is down or cannot be scraped
+              description: No events are being stored; the backlog is safe in Kafka and will drain on return. Check the pods in the event-console namespace and the consumer logs.
+
+  - interval: 1m
+    # A consumer that disappears entirely (no series at all) must alert too: `up == 0` alone would stay silent.
+    input_series:
+      - series: 'up{job="event-console-producer"}'
+        values: '1 1 1 1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 8m          # the CONSUMER has no series at all
+        alertname: EventConsoleConsumerDown
+        exp_alerts:
+          - exp_labels: { severity: critical, job: event-console-consumer }   # absent() keeps the job label it was asked about
+            exp_annotations:
+              summary: The Event Console consumer is down or cannot be scraped
+              description: No events are being stored; the backlog is safe in Kafka and will drain on return. Check the pods in the event-console namespace and the consumer logs.
+      - eval_time: 8m          # ...and a healthy producer does not
+        alertname: EventConsoleProducerDown
+        exp_alerts: []
+
+  # ---- consumer lag ------------------------------------------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'kafka_consumer_fetch_manager_records_lag_max{application="event-console-consumer", client_id="c1"}'
+        values: '0 50 20000 20000 20000 20000 20000 20000 20000 20000'
+      - series: 'kafka_consumer_fetch_manager_records_lag_max{application="event-console-consumer", client_id="c2"}'
+        values: '0 0 0 0 0 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 4m          # lagging for 2 minutes: not yet
+        alertname: EventConsoleConsumerLagHigh
+        exp_alerts: []
+      - eval_time: 9m          # the worst consumer thread decides, not the average
+        alertname: EventConsoleConsumerLagHigh
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: The consumer is more than 10,000 records behind
+              description: It is stalled (MongoDB or the Schema Registry unreachable - see the other alerts) or slower than the producers. Lag only grows until the cause is fixed.
+
+  # ---- DEAD events -------------------------------------------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'eventconsole_events{application="event-console-consumer", status="DEAD"}'
+        values: '0 0 3 3 3 3 3 3 3 3 3 3 3 3'
+      - series: 'eventconsole_events{application="event-console-consumer", status="SUCCESS"}'
+        values: '500 500 500 500 500 500 500 500 500 500 500 500 500 500'
+    alert_rule_test:
+      - eval_time: 8m          # DEAD for 6 minutes: not yet
+        alertname: EventConsoleDeadEvents
+        exp_alerts: []
+      - eval_time: 13m
+        alertname: EventConsoleDeadEvents
+        exp_alerts:
+          - exp_labels: { severity: warning, application: event-console-consumer }
+            exp_annotations:
+              summary: There are DEAD events
+              description: Events used up all their retries. Read their lastError in the UI (DEAD filter), fix the cause, then requeue them. They never expire on their own.
+
+  - interval: 1m
+    # Several consumer replicas report the same number: one DEAD event must not look like several alerts.
+    input_series:
+      - series: 'eventconsole_events{application="event-console-consumer", status="DEAD", instance="a"}'
+        values: '2 2 2 2 2 2 2 2 2 2 2 2 2'
+      - series: 'eventconsole_events{application="event-console-consumer", status="DEAD", instance="b"}'
+        values: '2 2 2 2 2 2 2 2 2 2 2 2 2'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: EventConsoleDeadEvents
+        exp_alerts:
+          - exp_labels: { severity: warning, application: event-console-consumer }
+            exp_annotations:
+              summary: There are DEAD events
+              description: Events used up all their retries. Read their lastError in the UI (DEAD filter), fix the cause, then requeue them. They never expire on their own.
+
+  # ---- FAILED backlog ----------------------------------------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'eventconsole_events{application="event-console-consumer", status="FAILED"}'
+        values: '5 5 150 150 150 150 150 150 150 150 150 150 150 150 150 150 150 150 150'
+    alert_rule_test:
+      - eval_time: 10m         # over the threshold for 8 minutes: not yet
+        alertname: EventConsoleFailedBacklog
+        exp_alerts: []
+      - eval_time: 18m
+        alertname: EventConsoleFailedBacklog
+        exp_alerts:
+          - exp_labels: { severity: warning, application: event-console-consumer }
+            exp_annotations:
+              summary: More than 100 events are waiting to be retried
+              description: A burst of bad events, or a cause that keeps failing retries. Check lastError on a few FAILED events in the UI.
+
+  # ---- dead letters not reaching Kafka -----------------------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'eventconsole_dead_letters_unconfirmed{application="event-console-consumer"}'
+        values: '0 1 1 1 1 1 1 1 1 1 1 1 1 0 0'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: EventConsoleDeadLettersUnconfirmed
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: EventConsoleDeadLettersUnconfirmed
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: DEAD events are not reaching the dead-letter topic
+              description: Kafka refused the dead-letter write, or no retry worker is running. The events are safe in MongoDB; the topic copy will be written when Kafka returns.
+      - eval_time: 14m         # confirmed again: resolved
+        alertname: EventConsoleDeadLettersUnconfirmed
+        exp_alerts: []
+
+  # ---- the Schema Registry being unreachable -----------------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'eventconsole_contract_unavailable_total{application="event-console-consumer"}'
+        values: '0 0 0 4 9 14 19 24 29 34'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: EventConsoleContractUnavailable
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: EventConsoleContractUnavailable
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: A service cannot reach the Schema Registry
+              description: The consumer waits (nothing is failed or dropped) and the producer refuses to publish unchecked. Schemas already seen keep working. Check the schema-registry pod.
+
+  # ---- Kafka not acknowledging publishes -----------------------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'eventconsole_publish_failed_total{application="event-console-producer"}'
+        values: '0 0 0 0 0 7 7 7 7 7'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: EventConsolePublishFailures
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: EventConsolePublishFailures
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: Kafka did not acknowledge some published events
+              description: Those events were NOT written. Check broker health; the audit record of the publish job lists the first error.
+
+  # ---- the gauges going stale because MongoDB is unreachable ----------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'eventconsole_metrics_refresh_failures_total{application="event-console-consumer"}'
+        values: '0 0 0 4 8 12 16 20 24 28 32 36 40 44'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: EventConsoleStatusMetricsStale
+        exp_alerts: []
+      - eval_time: 13m
+        alertname: EventConsoleStatusMetricsStale
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: The consumer cannot read MongoDB
+              description: The status gauges are frozen at their last values, so the DEAD/FAILED alerts cannot be trusted until MongoDB is back.

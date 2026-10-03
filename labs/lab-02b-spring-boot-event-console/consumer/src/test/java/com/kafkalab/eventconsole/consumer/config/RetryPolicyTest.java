@@ -38,7 +38,8 @@ class RetryPolicyTest {
 
     @Test
     void whenTheDatabaseIsDownTheConsumerRetriesForeverWithACappedBackoff() {
-        AppProperties props = new AppProperties("orders", 3, 1, 1, 500, 5_000, Duration.ofDays(7), retry);
+        AppProperties props = new AppProperties("orders", 3, 1, 1, 500, 5_000, Duration.ofDays(7), retry,
+                new AppProperties.Schema("http://localhost:8081", 500, 1_000));
         BackOffExecution execution = ((BackOff) ConsumerErrorHandlingConfig.retryForever(props)).start();
 
         assertThat(execution.nextBackOff()).isEqualTo(500);

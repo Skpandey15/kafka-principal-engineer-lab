@@ -1,0 +1,6 @@
+workflow-aggregator
+git
+junit
+timestamper
+configuration-as-code
+job-dsl

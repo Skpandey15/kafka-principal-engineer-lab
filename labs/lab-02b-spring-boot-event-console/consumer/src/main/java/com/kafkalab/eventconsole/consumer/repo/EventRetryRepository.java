@@ -2,6 +2,7 @@ package com.kafkalab.eventconsole.consumer.repo;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.mongodb.core.FindAndModifyOptions;
@@ -62,6 +63,12 @@ public class EventRetryRepository {
                 RETURN_UPDATED, EventDocument.class));
     }
 
+    /** DEAD events whose copy on the dead-letter topic is not confirmed (Kafka was unavailable, or it has not run yet). */
+    public long countUnconfirmedDeadLetters() {
+        return mongo.count(Query.query(Criteria.where("status").is(EventStatus.DEAD.name()).and("dltPublished").is(false)),
+                EventDocument.class);
+    }
+
     /** The retry succeeded; {@code retries} then counts it, so it reads "succeeded after N retries". */
     public boolean markSucceeded(String id, int claimedRetries, Instant now) {
         Update update = new Update()
@@ -105,14 +112,38 @@ public class EventRetryRepository {
     /** Operator action: give a DEAD event a fresh retry budget. Returns false if it is not DEAD (any more). */
     public boolean requeue(String id, Instant now) {
         Query query = Query.query(Criteria.where("_id").is(id).and("status").is(EventStatus.DEAD.name()));
-        Update update = new Update()
+        return mongo.updateFirst(query, requeueUpdate(now), EventDocument.class).getMatchedCount() > 0;
+    }
+
+    /**
+     * Operator action after a cause was fixed: requeue up to {@code limit} DEAD events, longest-dead
+     * first. Bounded on purpose -- the retry worker drains them at its own pace, but a single click
+     * should never be able to flood a downstream that has only just recovered.
+     *
+     * @return how many events were requeued
+     */
+    public long requeueDead(int limit, Instant now) {
+        Query oldest = Query.query(Criteria.where("status").is(EventStatus.DEAD.name()))
+                .with(Sort.by(Sort.Order.asc("deadAt"))).limit(limit);
+        oldest.fields().include("_id");
+        // Read raw documents: only _id is fetched, and the entity (which has primitive fields) cannot be built from that.
+        List<Object> ids = mongo.find(oldest, org.bson.Document.class, "events").stream().<Object>map(d -> d.get("_id")).toList();
+        if (ids.isEmpty()) {
+            return 0;
+        }
+        // Still conditional on DEAD: an event that was requeued (or retried) in the meantime is left alone.
+        Query chosen = Query.query(Criteria.where("_id").in(ids).and("status").is(EventStatus.DEAD.name()));
+        return mongo.updateMulti(chosen, requeueUpdate(now), EventDocument.class).getModifiedCount();
+    }
+
+    private static Update requeueUpdate(Instant now) {
+        return new Update()
                 .set("status", EventStatus.FAILED.name())
                 .set("retries", 0)
                 .set("nextRetryAt", now)
                 .unset("lockedUntil")
                 .unset("deadAt")
                 .unset("dltPublished");
-        return mongo.updateFirst(query, update, EventDocument.class).getMatchedCount() > 0;
     }
 
     private boolean transition(String id, EventStatus expectedStatus, int expectedRetries, Update update) {

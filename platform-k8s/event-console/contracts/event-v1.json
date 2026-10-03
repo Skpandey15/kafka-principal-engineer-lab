@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "EventConsoleEvent",
+  "description": "An event on the event-console topic. The content model is CLOSED (additionalProperties: false): an event may carry only the properties declared here. That makes a misspelt field a rejected event instead of silently lost data, and it is what lets the registry's BACKWARD rule allow a later version to add an OPTIONAL property (in an open model, adding one is not backward-compatible, because old data could already carry a property of that name with any type).",
+  "type": "object",
+  "required": ["id"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "seq": { "type": "integer", "minimum": 0 },
+    "batch": { "type": "string" },
+    "ts": { "type": "string" },
+    "status": { "type": "string" }
+  }
+}

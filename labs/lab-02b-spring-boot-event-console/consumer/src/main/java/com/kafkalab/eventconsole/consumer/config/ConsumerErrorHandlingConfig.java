@@ -11,8 +11,8 @@ import org.springframework.util.backoff.ExponentialBackOff;
 public class ConsumerErrorHandlingConfig {
 
     /**
-     * What happens when the listener itself throws -- which, by design, means ONE thing: MongoDB
-     * could not be written.
+     * What happens when the listener itself throws -- which, by design, means one kind of thing: a
+     * dependency is unreachable (MongoDB could not be written, or the Schema Registry could not answer).
      *
      * <p>A bad event never reaches this handler. Processing failures are caught per event and
      * stored as FAILED (see {@code EventConsumer}), and the retry worker owns them from there. So

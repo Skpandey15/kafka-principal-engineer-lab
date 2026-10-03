@@ -48,7 +48,7 @@ class RetentionIntegrationTest {
     MongoTemplate mongo;
 
     private static EventDocument event(String id, EventStatus status, Instant consumedAt) {
-        return new EventDocument(id, "t", 0, 1, "k", "v", consumedAt, consumedAt, status, 0, null, null, null, null, null,
+        return new EventDocument(id, "t", 0, 1, "k", "v", "1", consumedAt, consumedAt, status, 0, null, null, null, null, null,
                 status == EventStatus.DEAD ? Boolean.TRUE : null);
     }
 

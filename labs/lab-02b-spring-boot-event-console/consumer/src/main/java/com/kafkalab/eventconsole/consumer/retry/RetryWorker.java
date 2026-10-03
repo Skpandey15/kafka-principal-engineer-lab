@@ -17,7 +17,9 @@ import org.springframework.stereotype.Component;
 import com.kafkalab.eventconsole.consumer.config.AppProperties;
 import com.kafkalab.eventconsole.consumer.consume.EventConsumer;
 import com.kafkalab.eventconsole.consumer.model.EventDocument;
+import com.kafkalab.eventconsole.consumer.process.ConsumedEvent;
 import com.kafkalab.eventconsole.consumer.process.EventProcessor;
+import com.kafkalab.eventconsole.consumer.process.InfrastructureUnavailableException;
 import com.kafkalab.eventconsole.consumer.repo.EventRetryRepository;
 import io.micrometer.core.instrument.MeterRegistry;
 
@@ -89,14 +91,25 @@ public class RetryWorker {
             if (claimed.isEmpty()) {
                 return;
             }
-            retry(claimed.get());
+            try {
+                retry(claimed.get());
+            } catch (InfrastructureUnavailableException outage) {
+                // A dependency (the Schema Registry) is down. That says nothing about this event: no
+                // attempt is recorded or counted, its lease simply runs out and it is tried again. Stop
+                // this pass (every other event would hit the same wall) but still do the dead-letter sweep.
+                metrics.counter("eventconsole.contract.unavailable").increment();
+                log.warn("Retry pass stopped, a dependency is unavailable: {}", outage.getMessage());
+                return;
+            }
         }
     }
 
     private void retry(EventDocument event) {
         String error = null;
         try {
-            processor.process(event.key(), event.value());
+            processor.process(new ConsumedEvent(event.key(), event.value(), event.schemaId()));
+        } catch (InfrastructureUnavailableException outage) {
+            throw outage;
         } catch (RuntimeException e) {
             error = EventConsumer.describe(e);
         }

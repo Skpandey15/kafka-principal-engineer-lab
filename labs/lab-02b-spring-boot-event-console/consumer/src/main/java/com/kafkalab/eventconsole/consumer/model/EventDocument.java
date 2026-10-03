@@ -22,6 +22,7 @@ import org.springframework.data.mongodb.core.mapping.Document;
  * DEAD documents never expire on their own: they are unfinished business, and silently deleting
  * them would lose the only record of why an event did not make it.
  *
+ * @param schemaId     the x-schema-id header the producer sent: which contract it says the value follows
  * @param retries      how many RETRIES have run (not counting the first attempt at consume time)
  * @param lastError    why the most recent attempt failed
  * @param nextRetryAt  FAILED only: the retry worker will not touch the event before this instant
@@ -40,6 +41,7 @@ public record EventDocument(
         long offset,
         @Indexed String key,
         String value,
+        String schemaId,
         Instant kafkaTimestamp,
         Instant consumedAt,
         EventStatus status,

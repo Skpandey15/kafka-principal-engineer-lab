@@ -20,7 +20,7 @@ public final class StartupConfigValidator {
     static final Map<String, List<String>> REQUIRED = Map.of(
             "k3d", List.of("spring.mongodb.uri"),
             "aws", List.of("spring.kafka.bootstrap-servers", "spring.kafka.properties.sasl.jaas.config",
-                    "spring.mongodb.uri"));
+                    "spring.mongodb.uri", "app.schema.registry-url"));
 
     private StartupConfigValidator() {
     }

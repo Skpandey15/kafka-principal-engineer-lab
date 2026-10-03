@@ -8,6 +8,7 @@ import {
   getStats,
   parsePastedLines,
   publishBulk,
+  requeueAllDead,
   requeueEvent,
 } from './api.js'
 
@@ -44,10 +45,11 @@ function PublishPanel({ config, onPublished }) {
   const [keyPrefix, setKeyPrefix] = useState('order-')
   const [fixedKey, setFixedKey] = useState('hot-key')
   const [valuePrefix, setValuePrefix] = useState('evt')
-  const [pasted, setPasted] = useState('order-1|{"status":"CREATED"}\norder-2|{"status":"PAID"}\n{"note":"no key on this one"}')
+  const [pasted, setPasted] = useState('order-1|{"id":"o-1","status":"CREATED"}\norder-2|{"id":"o-2","status":"PAID"}\n{"id":"o-3","status":"NEW"}')
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState(null)
   const [error, setError] = useState('')
+  const [violations, setViolations] = useState([])
 
   const pastedEvents = useMemo(() => parsePastedLines(pasted), [pasted])
   const total = mode === 'GENERATE' ? Number(count) || 0 : pastedEvents.length
@@ -56,6 +58,7 @@ function PublishPanel({ config, onPublished }) {
     e.preventDefault()
     setBusy(true)
     setError('')
+    setViolations([])
     setResult(null)
     try {
       const request =
@@ -75,6 +78,7 @@ function PublishPanel({ config, onPublished }) {
       onPublished()
     } catch (err) {
       setError(err.message)
+      setViolations(err.details?.violations ?? [])
     } finally {
       setBusy(false)
     }
@@ -85,6 +89,14 @@ function PublishPanel({ config, onPublished }) {
       <h2>Publish events</h2>
       <p className="muted">
         Topic <code>{config?.topic ?? '…'}</code> · {config?.partitions ?? '…'} partitions
+      </p>
+      <p className="muted small">
+        Contract <code>{config?.contract?.subject ?? '…'}</code>{' '}
+        {config?.contract?.available ? (
+          <span className="badge ok">v{config.contract.version} · schema {config.contract.schemaId}</span>
+        ) : (
+          <span className="badge bad">registry unavailable</span>
+        )}
       </p>
 
       <div className="tabs" role="tablist">
@@ -152,8 +164,8 @@ function PublishPanel({ config, onPublished }) {
           <label>
             <span>One event per line — <code>key|value</code>, or just a value for no key</span>
             <span className="muted small">
-              Values must be JSON objects. Anything else is accepted by Kafka but fails processing: it is
-              retried with backoff, then marked DEAD and sent to the dead-letter topic.
+              Every value is checked against the contract before anything is sent. If any event breaks it,
+              nothing is published and you are told which line and why.
             </span>
             <textarea rows="9" value={pasted} onChange={(e) => setPasted(e.target.value)} spellCheck="false" />
             <span className="muted">{nf.format(pastedEvents.length)} event(s) parsed</span>
@@ -166,6 +178,16 @@ function PublishPanel({ config, onPublished }) {
       </form>
 
       {error && <div className="alert error" role="alert">{error}</div>}
+      {violations.length > 0 && (
+        <ul className="violations" aria-label="Events that break the contract">
+          {violations.map((v) => (
+            <li key={v.index}>
+              <strong>#{v.index + 1}</strong>
+              {v.key && <code> {v.key}</code>} — {v.reason}
+            </li>
+          ))}
+        </ul>
+      )}
 
       {result && (
         <div className="result" aria-live="polite">
@@ -259,6 +281,19 @@ function EventsPanel({ config, consumerConfig, stats, refreshKey, onCleared }) {
     onCleared()
   }
 
+  async function requeueAll() {
+    const dead = stats.byStatus?.DEAD ?? 0
+    if (!window.confirm(`Give ${nf.format(Math.min(dead, 1000))} DEAD event(s) a fresh set of retries? Only do this once the cause is fixed.`)) return
+    try {
+      await requeueAllDead(1000)
+      setErr('')
+      load()
+      onCleared()
+    } catch (e) {
+      setErr(e.message)
+    }
+  }
+
   async function requeue(id) {
     try {
       await requeueEvent(id)
@@ -299,6 +334,12 @@ function EventsPanel({ config, consumerConfig, stats, refreshKey, onCleared }) {
             {s} · {nf.format(stats.byStatus?.[s] ?? 0)}
           </button>
         ))}
+        {(stats.byStatus?.DEAD ?? 0) > 0 && (
+          <button type="button" className="ghost small-btn" onClick={requeueAll}
+            title="Give up to 1,000 DEAD events a fresh set of retries">
+            Requeue DEAD
+          </button>
+        )}
       </div>
 
       <div className="filters">

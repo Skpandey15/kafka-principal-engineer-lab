@@ -13,9 +13,9 @@ if [[ "${1:-}" == "--wipe" ]]; then
   kubectl delete namespace event-console --ignore-not-found
 else
   echo "Deleting the Deployments and Services, keeping the MongoDB PersistentVolumeClaim and Secrets -- data survives."
-  for d in event-console-frontend event-console-producer event-console-consumer mongo; do
+  for d in event-console-frontend event-console-producer event-console-consumer schema-registry mongo; do
     kubectl -n event-console delete deployment "${d}" --ignore-not-found
   done
-  kubectl -n event-console delete service event-console-frontend event-console-producer event-console-consumer mongo --ignore-not-found
+  kubectl -n event-console delete service event-console-frontend event-console-producer event-console-consumer schema-registry mongo --ignore-not-found
   kubectl -n event-console delete job mongo-users --ignore-not-found
 fi

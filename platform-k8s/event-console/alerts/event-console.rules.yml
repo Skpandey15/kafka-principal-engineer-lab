@@ -1,0 +1,85 @@
+# Alert rules for the Event Console. Every alert answers "what do I do?" in its description.
+#
+# The signals, and where they come from (all scraped from /actuator/prometheus):
+#   up{job=...}                                  Prometheus itself: can it reach the service
+#   kafka_consumer_fetch_manager_records_lag_max the consumer's own view of how far behind it is
+#   eventconsole_events{status}                  events in MongoDB by status (consumer; every replica reports the same numbers)
+#   eventconsole_dead_letters_unconfirmed        DEAD events not yet confirmed on event-console.DLT
+#   eventconsole_contract_unavailable_total      times a service could not reach the Schema Registry
+#   eventconsole_publish_failed_total            events Kafka did not acknowledge
+#
+# Verified with `promtool test rules` (see event-console.rules.test.yml) -- run ./test.sh.
+groups:
+  - name: event-console
+    rules:
+      - alert: EventConsoleConsumerDown
+        expr: max(up{job="event-console-consumer"}) == 0 or absent(up{job="event-console-consumer"})
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: The Event Console consumer is down or cannot be scraped
+          description: No events are being stored; the backlog is safe in Kafka and will drain on return. Check the pods in the event-console namespace and the consumer logs.
+
+      - alert: EventConsoleProducerDown
+        expr: max(up{job="event-console-producer"}) == 0 or absent(up{job="event-console-producer"})
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: The Event Console producer is down or cannot be scraped
+          description: Nothing can be published. Reads keep working. Check the pods in the event-console namespace and the producer logs.
+
+      - alert: EventConsoleConsumerLagHigh
+        expr: max(kafka_consumer_fetch_manager_records_lag_max{application="event-console-consumer"}) > 10000
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: The consumer is more than 10,000 records behind
+          description: It is stalled (MongoDB or the Schema Registry unreachable - see the other alerts) or slower than the producers. Lag only grows until the cause is fixed.
+
+      - alert: EventConsoleDeadEvents
+        expr: max by (application) (eventconsole_events{status="DEAD"}) > 0
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: There are DEAD events
+          description: Events used up all their retries. Read their lastError in the UI (DEAD filter), fix the cause, then requeue them. They never expire on their own.
+
+      - alert: EventConsoleFailedBacklog
+        expr: max by (application) (eventconsole_events{status="FAILED"}) > 100
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: More than 100 events are waiting to be retried
+          description: A burst of bad events, or a cause that keeps failing retries. Check lastError on a few FAILED events in the UI.
+
+      - alert: EventConsoleDeadLettersUnconfirmed
+        expr: max(eventconsole_dead_letters_unconfirmed) > 0
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: DEAD events are not reaching the dead-letter topic
+          description: Kafka refused the dead-letter write, or no retry worker is running. The events are safe in MongoDB; the topic copy will be written when Kafka returns.
+
+      - alert: EventConsoleContractUnavailable
+        expr: sum(increase(eventconsole_contract_unavailable_total[5m])) > 0
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: A service cannot reach the Schema Registry
+          description: The consumer waits (nothing is failed or dropped) and the producer refuses to publish unchecked. Schemas already seen keep working. Check the schema-registry pod.
+
+      - alert: EventConsolePublishFailures
+        expr: sum(increase(eventconsole_publish_failed_total[5m])) > 0
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: Kafka did not acknowledge some published events
+          description: Those events were NOT written. Check broker health; the audit record of the publish job lists the first error.
+
+      - alert: EventConsoleStatusMetricsStale
+        expr: sum(increase(eventconsole_metrics_refresh_failures_total[10m])) > 3
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: The consumer cannot read MongoDB
+          description: The status gauges are frozen at their last values, so the DEAD/FAILED alerts cannot be trusted until MongoDB is back.

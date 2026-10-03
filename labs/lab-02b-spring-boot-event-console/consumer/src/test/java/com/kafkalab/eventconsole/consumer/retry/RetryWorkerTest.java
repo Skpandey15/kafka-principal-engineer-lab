@@ -7,6 +7,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -41,7 +42,8 @@ class RetryWorkerTest {
 
     private static final Instant NOW = Instant.parse("2026-10-03T10:00:00Z");
     private static final AppProperties.Retry RETRY = new AppProperties.Retry(true, 5, 5_000, 300_000, 2_000, 50, 60_000, 15_000);
-    private static final AppProperties PROPS = new AppProperties("orders", 3, 1, 1, 500, 5_000, Duration.ofDays(7), RETRY);
+    private static final AppProperties PROPS = new AppProperties("orders", 3, 1, 1, 500, 5_000, Duration.ofDays(7), RETRY,
+            new AppProperties.Schema("http://localhost:8081", 500, 1_000));
 
     private final EventRetryRepository repository = mock(EventRetryRepository.class);
     @SuppressWarnings("unchecked")
@@ -49,20 +51,20 @@ class RetryWorkerTest {
     private final SimpleMeterRegistry metrics = new SimpleMeterRegistry();
     private final Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
 
-    private EventProcessor processor = (key, value) -> {
+    private EventProcessor processor = event -> {
     };
 
     private RetryWorker worker() {
-        return new RetryWorker(repository, (key, value) -> processor.process(key, value), kafka, PROPS, metrics, clock);
+        return new RetryWorker(repository, event -> processor.process(event), kafka, PROPS, metrics, clock);
     }
 
     private static EventDocument failed(int retries) {
-        return new EventDocument("orders-1-42", "orders", 1, 42, "k", "{\"a\":1}", NOW.minusSeconds(60), NOW.minusSeconds(60),
+        return new EventDocument("orders-1-42", "orders", 1, 42, "k", "{\"a\":1}", "1", NOW.minusSeconds(60), NOW.minusSeconds(60),
                 EventStatus.FAILED, retries, "earlier error", NOW.minusSeconds(1), NOW.plusSeconds(60), null, null, null);
     }
 
     private static EventDocument dead() {
-        return new EventDocument("orders-1-43", "orders", 1, 43, "k", "bad", NOW, NOW, EventStatus.DEAD, 5, "gave up",
+        return new EventDocument("orders-1-43", "orders", 1, 43, "k", "bad", "1", NOW, NOW, EventStatus.DEAD, 5, "gave up",
                 null, NOW.plusSeconds(60), null, NOW, false);
     }
 
@@ -87,7 +89,7 @@ class RetryWorkerTest {
     @Test
     void aRetryThatFailsSchedulesTheNextOneWithDoubledBackoff() {
         oneDueEvent(failed(0));
-        processor = (key, value) -> {
+        processor = event -> {
             throw new EventProcessingException("still broken");
         };
         when(repository.markRetryFailed(anyString(), anyInt(), anyString(), any())).thenReturn(true);
@@ -103,7 +105,7 @@ class RetryWorkerTest {
     @Test
     void theFifthFailedRetryMakesTheEventDeadInsteadOfSchedulingASixth() {
         oneDueEvent(failed(4));
-        processor = (key, value) -> {
+        processor = event -> {
             throw new EventProcessingException("never going to work");
         };
         when(repository.markDead(anyString(), anyInt(), anyString(), any())).thenReturn(true);
@@ -118,7 +120,7 @@ class RetryWorkerTest {
     @Test
     void theFourthFailedRetryStillSchedulesAFifth() {
         oneDueEvent(failed(3));
-        processor = (key, value) -> {
+        processor = event -> {
             throw new EventProcessingException("nope");
         };
         when(repository.markRetryFailed(anyString(), anyInt(), anyString(), any())).thenReturn(true);
@@ -132,7 +134,7 @@ class RetryWorkerTest {
     @Test
     void anyExceptionFromTheProcessorCountsAsAFailedAttemptNotACrashOfTheWorker() {
         oneDueEvent(failed(0));
-        processor = (key, value) -> {
+        processor = event -> {
             throw new IllegalStateException("downstream exploded");
         };
         when(repository.markRetryFailed(anyString(), anyInt(), anyString(), any())).thenReturn(true);
@@ -140,6 +142,51 @@ class RetryWorkerTest {
         worker().runOnce();
 
         verify(repository).markRetryFailed(eq("orders-1-42"), eq(0), eq("IllegalStateException: downstream exploded"), any());
+    }
+
+    @Test
+    void theRetryIsGivenTheSchemaIdTheEventDeclaredWhenItWasConsumed() {
+        oneDueEvent(failed(0));
+        java.util.concurrent.atomic.AtomicReference<com.kafkalab.eventconsole.consumer.process.ConsumedEvent> seen =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        processor = seen::set;
+        when(repository.markSucceeded(anyString(), anyInt(), any())).thenReturn(true);
+
+        worker().runOnce();
+
+        assertThat(seen.get()).isEqualTo(new com.kafkalab.eventconsole.consumer.process.ConsumedEvent("k", "{\"a\":1}", "1"));
+    }
+
+    @Test
+    void aSchemaRegistryOutageDuringARetryRecordsNothingAndCountsNoAttempt() {
+        oneDueEvent(failed(2));
+        processor = event -> {
+            throw new com.kafkalab.eventconsole.consumer.process.InfrastructureUnavailableException("registry down");
+        };
+
+        worker().runOnce(); // must not throw, and must not decide anything about the event
+
+        verify(repository, never()).markSucceeded(anyString(), anyInt(), any());
+        verify(repository, never()).markRetryFailed(anyString(), anyInt(), anyString(), any());
+        verify(repository, never()).markDead(anyString(), anyInt(), anyString(), any());
+        assertThat(metrics.counter("eventconsole.retry.failed").count()).isZero();
+    }
+
+    @Test
+    void aSchemaRegistryOutageStopsTheRetryPassButNotTheDeadLetterSweep() {
+        when(repository.claimDueForRetry(any(), any())).thenReturn(Optional.of(failed(0)));
+        when(repository.claimDeadForDlt(any(), any())).thenReturn(Optional.of(dead())).thenReturn(Optional.empty());
+        processor = event -> {
+            throw new com.kafkalab.eventconsole.consumer.process.InfrastructureUnavailableException("registry down");
+        };
+        when(kafka.send(any(ProducerRecord.class))).thenReturn(CompletableFuture.completedFuture((SendResult<String, String>) null));
+
+        worker().runOnce();
+
+        // One claim only: the pass stopped at the first dependency failure instead of leasing every due event...
+        verify(repository, times(1)).claimDueForRetry(any(), any());
+        // ...and the dead letters, which need no registry, still went out.
+        verify(repository).markDltPublished("orders-1-43");
     }
 
     @Test

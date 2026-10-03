@@ -15,6 +15,8 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.WebRequest;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
+import com.kafkalab.eventconsole.producer.contract.ContractUnavailableException;
+import com.kafkalab.eventconsole.producer.contract.ContractViolationException;
 
 /**
  * Extends Spring's own handler so framework errors (404, 405, 415, ...) keep their
@@ -40,6 +42,23 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
             HttpHeaders headers, HttpStatusCode status, WebRequest request) {
         // Never echo a parser's internal message (it can quote the request body or class names).
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of("error", "Malformed request body"));
+    }
+
+    /** The request is well-formed but its events break the contract: 422, with exactly what is wrong and where. */
+    @ExceptionHandler(ContractViolationException.class)
+    ResponseEntity<Map<String, Object>> contractViolation(ContractViolationException e) {
+        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY).body(Map.of(
+                "error", e.total() + " event(s) break the event contract (schema " + e.schemaId() + "); nothing was published",
+                "violations", e.violations(),
+                "total", e.total()));
+    }
+
+    /** No contract could be obtained: refuse rather than publish unchecked. Retryable, and not the caller's fault. */
+    @ExceptionHandler(ContractUnavailableException.class)
+    ResponseEntity<Map<String, String>> contractUnavailable(ContractUnavailableException e) {
+        log.warn("Refusing to publish: {}", e.getMessage());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(Map.of("error", "The event contract is unavailable, so nothing was published. Try again shortly."));
     }
 
     @ExceptionHandler(IllegalArgumentException.class)

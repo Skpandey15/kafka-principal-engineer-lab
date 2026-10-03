@@ -5,13 +5,17 @@ async function call(path, options = {}) {
   })
   const body = await res.json().catch(() => null)
   if (!res.ok) {
-    throw new Error(body?.error || `${res.status} ${res.statusText}`)
+    const err = new Error(body?.error || `${res.status} ${res.statusText}`)
+    err.status = res.status
+    err.details = body
+    throw err
   }
   return body
 }
 
 export const getConfig = () => call('/config')
 export const getStats = () => call('/events/stats')
+export const requeueAllDead = (limit = 1000) => call(`/events/requeue-dead?limit=${limit}`, { method: 'POST' })
 export const getConsumerConfig = () => call('/events/config')
 export const requeueEvent = (id) => call(`/events/${encodeURIComponent(id)}/requeue`, { method: 'POST' })
 export const getJobs = (limit = 8) => call(`/jobs?limit=${limit}`)
