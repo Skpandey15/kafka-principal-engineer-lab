@@ -15,15 +15,30 @@ server {
 
     # Resolve the backend at request time (not once at startup), so nginx neither
     # refuses to start while the backend is down nor keeps a stale pod IP after it
-    # restarts. nginx's resolver ignores the pod's DNS search domains, so BACKEND_UPSTREAM
-    # must be a fully-qualified name. Both values are filled in from the environment
+    # restarts. nginx's resolver ignores the pod's DNS search domains, so the *_UPSTREAM values
+    # must be a fully-qualified name. These values are filled in from the environment
     # when the container starts (see Dockerfile).
     resolver ${DNS_RESOLVER} valid=10s ipv6=off;
 
+    # The read side: everything under /api/events is served by the CONSUMER service.
+    # `^~` makes this prefix win over the broader /api/ below.
+    location ^~ /api/events {
+        include /etc/nginx/snippets/security-headers.conf;
+        set $consumer ${CONSUMER_UPSTREAM};
+        proxy_pass $consumer;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 30s;
+    }
+
+    # The write side: publishing, the job audit log and the form config are the PRODUCER service.
     location /api/ {
         include /etc/nginx/snippets/security-headers.conf;
-        set $backend ${BACKEND_UPSTREAM};
-        proxy_pass $backend;
+        set $producer ${PRODUCER_UPSTREAM};
+        proxy_pass $producer;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

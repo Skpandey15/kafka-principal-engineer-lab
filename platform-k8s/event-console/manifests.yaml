@@ -1,10 +1,19 @@
 # Kubernetes deployment of labs/lab-02b-spring-boot-event-console:
-# React UI (nginx) -> Spring Boot API -> MongoDB, with Kafka from platform-k8s/kafka.
-# Prerequisite: platform-k8s/kafka/setup.sh. Use setup.sh, not `kubectl apply` directly --
-# it builds/imports the images and creates the `event-console-mongo` Secret first.
 #
-# The Secret is deliberately NOT in this file: a password committed to git is not a secret.
-# setup.sh generates a random one on first run and never prints it.
+#   browser -> nginx (React UI) --/api/events--> CONSUMER service --> MongoDB (eventconsole_consumer)
+#                               \--/api/*------> PRODUCER service --> MongoDB (eventconsole_producer)
+#                                                       \--------> Kafka <--------/
+#
+# The producer and the consumer are separate Deployments that share nothing but the Kafka topic:
+# they are built, scaled, restarted and fail independently, and each has its OWN MongoDB database
+# and its OWN MongoDB user that can touch only that database.
+#
+# Prerequisite: platform-k8s/kafka/setup.sh. Use setup.sh, not `kubectl apply` directly -- it
+# builds/imports the images and creates the Secrets (event-console-mongo, producer-mongo,
+# consumer-mongo) first.
+#
+# The Secrets are deliberately NOT in this file: a password committed to git is not a secret.
+# setup.sh generates random ones on first run and never prints them.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -46,7 +55,8 @@ spec:
       containers:
         - name: mongo
           image: mongo:7.0
-          # Authentication is on: the image enables --auth when a root user is created.
+          # Authentication is on: the image enables --auth when a root user is created. The root
+          # account exists only for administration; neither application uses it.
           args: ["--wiredTigerCacheSizeGB", "0.25"]
           env:
             - { name: MONGO_INITDB_ROOT_USERNAME, value: root }
@@ -85,22 +95,80 @@ spec:
   selector: { app: mongo }
   ports: [{ port: 27017, targetPort: 27017 }]
 ---
-# ---------------------------------------------------------------- Spring Boot API
+# Creates (or updates) one least-privilege user per service: readWrite on ONLY that service's
+# database. Idempotent, so setup.sh can re-run it every time (it deletes and recreates the Job,
+# since a Job's spec is immutable). Works on a fresh volume AND an existing one, which MongoDB's
+# own init-script mechanism does not (that only runs on an empty data directory).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mongo-users
+  namespace: event-console
+spec:
+  backoffLimit: 8
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata: { labels: { app: mongo-users } }
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: create-users
+          image: mongo:7.0
+          env:
+            - { name: HOME, value: /tmp }
+            - name: ROOT_PASSWORD
+              valueFrom: { secretKeyRef: { name: event-console-mongo, key: MONGO_PASSWORD } }
+            - name: PRODUCER_PASSWORD
+              valueFrom: { secretKeyRef: { name: producer-mongo, key: PASSWORD } }
+            - name: CONSUMER_PASSWORD
+              valueFrom: { secretKeyRef: { name: consumer-mongo, key: PASSWORD } }
+          command:
+            - sh
+            - -c
+            - |
+              exec mongosh --host mongo --quiet -u root -p "$ROOT_PASSWORD" --authenticationDatabase admin --eval '
+                const ensureUser = (dbName, user, pwd) => {
+                  const d = db.getSiblingDB(dbName);
+                  const roles = [{ role: "readWrite", db: dbName }];
+                  if (d.getUser(user)) { d.updateUser(user, { pwd: pwd, roles: roles }); print("updated " + user + " on " + dbName); }
+                  else { d.createUser({ user: user, pwd: pwd, roles: roles }); print("created " + user + " on " + dbName); }
+                };
+                ensureUser("eventconsole_producer", "producer", process.env.PRODUCER_PASSWORD);
+                ensureUser("eventconsole_consumer", "consumer", process.env.CONSUMER_PASSWORD);
+              '
+          resources:
+            requests: { cpu: 10m, memory: 64Mi }
+            limits: { memory: 192Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: { sizeLimit: 32Mi } }
+---
+# ---------------------------------------------------------------- PRODUCER service
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: event-console-backend
+  name: event-console-producer
   namespace: event-console
-  labels: { app: event-console-backend }
+  labels: { app: event-console-producer }
 spec:
+  # Stateless, so it scales horizontally. One replica here only because this is a laptop cluster.
   replicas: 1
-  selector: { matchLabels: { app: event-console-backend } }
+  selector: { matchLabels: { app: event-console-producer } }
   template:
-    metadata: { labels: { app: event-console-backend } }
+    metadata: { labels: { app: event-console-producer } }
     spec:
       enableServiceLinks: false
-      # Longer than the app's 25s graceful-shutdown phase, so Kubernetes does not SIGKILL
-      # a pod that is still committing its last consumer offsets.
       terminationGracePeriodSeconds: 40
       securityContext:
         runAsNonRoot: true
@@ -108,22 +176,28 @@ spec:
         runAsGroup: 10001
         seccompProfile: { type: RuntimeDefault }
       initContainers:
-        # The app builds its MongoDB indexes at startup and gives up after 30s. A fresh
-        # MongoDB spends longer than that initializing, which used to crash-loop the API
-        # on first deploy. Wait for the port instead of relying on restarts.
+        # Wait until MongoDB accepts THIS service's credentials (not merely until the port is
+        # open): that proves MongoDB is up AND the mongo-users Job has created the user. Avoids
+        # a crash-loop on first deploy, when the app's startup index creation would time out.
         - name: wait-for-mongo
-          image: busybox:1.37
-          command: ["sh", "-c", "until nc -z -w 2 mongo 27017; do echo waiting for mongo; sleep 2; done"]
+          image: mongo:7.0
+          command: ["sh", "-c", 'until mongosh "$MONGODB_URI" --quiet --eval "db.runCommand({ping:1}).ok" 2>/dev/null | grep -q 1; do echo waiting for mongo credentials; sleep 3; done']
+          env:
+            - { name: HOME, value: /tmp }
+            - name: MONGODB_URI
+              valueFrom: { secretKeyRef: { name: producer-mongo, key: MONGODB_URI } }
           resources:
-            requests: { cpu: 5m, memory: 8Mi }
-            limits: { memory: 32Mi }
+            requests: { cpu: 10m, memory: 64Mi }
+            limits: { memory: 192Mi }
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
       containers:
-        - name: backend
-          image: kafkalab/event-console-backend:0.1.0
+        - name: producer
+          image: kafkalab/event-console-producer:0.2.0
           imagePullPolicy: IfNotPresent
           ports: [{ name: http, containerPort: 8080 }]
           env:
@@ -132,20 +206,17 @@ spec:
             # the single-node topic settings. Only what varies per deployment is set here.
             - { name: SPRING_PROFILES_ACTIVE, value: "k3d" }
             - { name: APP_TOPIC, value: "event-console" }
-            - { name: APP_CONSUMER_GROUP, value: "event-console-group" }
             - name: MONGODB_URI
-              valueFrom: { secretKeyRef: { name: event-console-mongo, key: MONGODB_URI } }
+              valueFrom: { secretKeyRef: { name: producer-mongo, key: MONGODB_URI } }
           resources:
-            requests: { cpu: 100m, memory: 384Mi }
-            limits: { memory: 512Mi }
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 448Mi }
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities: { drop: ["ALL"] }
           volumeMounts:
             - { name: tmp, mountPath: /tmp }
-          # Spring Boot's own probe groups: readiness also reflects that the app is
-          # shutting down, so traffic stops before the process does.
           startupProbe:
             httpGet: { path: /actuator/health/liveness, port: http }
             periodSeconds: 5
@@ -165,10 +236,96 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: event-console-backend
+  name: event-console-producer
   namespace: event-console
 spec:
-  selector: { app: event-console-backend }
+  selector: { app: event-console-producer }
+  ports: [{ port: 8080, targetPort: http }]
+---
+# ---------------------------------------------------------------- CONSUMER service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: event-console-consumer
+  namespace: event-console
+  labels: { app: event-console-consumer }
+spec:
+  # Consumer-group members share the topic's partitions, so replicas beyond the partition count
+  # (3) would sit idle. Scale up to 3 for throughput; never past it.
+  replicas: 1
+  selector: { matchLabels: { app: event-console-consumer } }
+  template:
+    metadata: { labels: { app: event-console-consumer } }
+    spec:
+      enableServiceLinks: false
+      # Longer than the app's 25s graceful-shutdown phase, so Kubernetes does not SIGKILL a pod
+      # that is still committing its last consumer offsets.
+      terminationGracePeriodSeconds: 40
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      initContainers:
+        - name: wait-for-mongo
+          image: mongo:7.0
+          command: ["sh", "-c", 'until mongosh "$MONGODB_URI" --quiet --eval "db.runCommand({ping:1}).ok" 2>/dev/null | grep -q 1; do echo waiting for mongo credentials; sleep 3; done']
+          env:
+            - { name: HOME, value: /tmp }
+            - name: MONGODB_URI
+              valueFrom: { secretKeyRef: { name: consumer-mongo, key: MONGODB_URI } }
+          resources:
+            requests: { cpu: 10m, memory: 64Mi }
+            limits: { memory: 192Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      containers:
+        - name: consumer
+          image: kafkalab/event-console-consumer:0.2.0
+          imagePullPolicy: IfNotPresent
+          ports: [{ name: http, containerPort: 8080 }]
+          env:
+            - { name: SPRING_PROFILES_ACTIVE, value: "k3d" }
+            - { name: APP_TOPIC, value: "event-console" }
+            - { name: APP_CONSUMER_GROUP, value: "event-console-consumer" }
+            - name: MONGODB_URI
+              valueFrom: { secretKeyRef: { name: consumer-mongo, key: MONGODB_URI } }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 448Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+          startupProbe:
+            httpGet: { path: /actuator/health/liveness, port: http }
+            periodSeconds: 5
+            failureThreshold: 36
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: http }
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+      volumes:
+        - { name: tmp, emptyDir: { sizeLimit: 64Mi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: event-console-consumer
+  namespace: event-console
+spec:
+  selector: { app: event-console-consumer }
   ports: [{ port: 8080, targetPort: http }]
 ---
 # ---------------------------------------------------------------- React UI (nginx)
@@ -194,12 +351,13 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: frontend
-          image: kafkalab/event-console-frontend:0.1.0
+          image: kafkalab/event-console-frontend:0.2.0
           imagePullPolicy: IfNotPresent
           ports: [{ name: http, containerPort: 8080 }]
           env:
             # Fully-qualified: nginx's resolver does not apply the pod's DNS search domains.
-            - { name: BACKEND_UPSTREAM, value: "http://event-console-backend.event-console.svc.cluster.local:8080" }
+            - { name: PRODUCER_UPSTREAM, value: "http://event-console-producer.event-console.svc.cluster.local:8080" }
+            - { name: CONSUMER_UPSTREAM, value: "http://event-console-consumer.event-console.svc.cluster.local:8080" }
             - { name: DNS_RESOLVER, value: "kube-dns.kube-system.svc.cluster.local" }
           resources:
             requests: { cpu: 20m, memory: 32Mi }
@@ -234,27 +392,43 @@ spec:
   ports: [{ port: 8080, targetPort: http, nodePort: 30089 }]
 ---
 # ---------------------------------------------------------------- Network policies
-# Least privilege: MongoDB is reachable only from the API, and the API only from the UI.
-# (Ingress rules only -- egress to Kafka in the `kafka` namespace is left open.)
+# Least privilege between tiers. (Ingress rules only -- egress to Kafka in the `kafka` namespace
+# is left open.) MongoDB is reachable only from the two services and the user-bootstrap Job; each
+# service is reachable only from the UI's nginx. The producer and consumer cannot reach each other.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: mongo-from-backend-only
+  name: mongo-from-services-only
   namespace: event-console
 spec:
   podSelector: { matchLabels: { app: mongo } }
   policyTypes: ["Ingress"]
   ingress:
-    - from: [{ podSelector: { matchLabels: { app: event-console-backend } } }]
+    - from:
+        - podSelector: { matchLabels: { app: event-console-producer } }
+        - podSelector: { matchLabels: { app: event-console-consumer } }
+        - podSelector: { matchLabels: { app: mongo-users } }
       ports: [{ port: 27017 }]
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: backend-from-frontend-only
+  name: producer-from-frontend-only
   namespace: event-console
 spec:
-  podSelector: { matchLabels: { app: event-console-backend } }
+  podSelector: { matchLabels: { app: event-console-producer } }
+  policyTypes: ["Ingress"]
+  ingress:
+    - from: [{ podSelector: { matchLabels: { app: event-console-frontend } } }]
+      ports: [{ port: 8080 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: consumer-from-frontend-only
+  namespace: event-console
+spec:
+  podSelector: { matchLabels: { app: event-console-consumer } }
   policyTypes: ["Ingress"]
   ingress:
     - from: [{ podSelector: { matchLabels: { app: event-console-frontend } } }]

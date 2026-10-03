@@ -1,8 +1,0 @@
-// Lets Gradle download the JDK that build.gradle's toolchain asks for (Java 26) when the
-// machine running the build does not already have it -- WSL, a Linux Jenkins agent, a fresh
-// laptop. Without this, `languageVersion = 26` fails on any machine that lacks JDK 26.
-plugins {
-    id 'org.gradle.toolchains.foojay-resolver-convention' version '1.0.0'
-}
-
-rootProject.name = 'lab-02b-spring-boot-event-console'

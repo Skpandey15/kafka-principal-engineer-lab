@@ -1,0 +1,75 @@
+# Consumer service -- settings common to every environment. Anything that differs between a
+# laptop, a k3d cluster and AWS lives in application-{local,k3d,aws}.yml -- activate one with
+#   SPRING_PROFILES_ACTIVE=local|k3d|aws        (or --spring.profiles.active=...)
+# With nothing set, `local` is used so `./gradlew bootRun` just works.
+spring:
+  application:
+    name: event-console-consumer
+  profiles:
+    default: local
+
+  # --- Kafka (connection details come from the profile) ----------------------
+  kafka:
+    consumer:
+      # Offsets are committed by the listener container only after the batch was stored
+      # (at-least-once); the Mongo write is idempotent, so a redelivery is harmless.
+      group-id: ${APP_CONSUMER_GROUP:event-console-consumer}
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      max-poll-records: 500
+      properties:
+        max.poll.interval.ms: 300000
+    listener:
+      ack-mode: batch
+    producer:
+      # The consumer only ever PRODUCES to publish poison records to the dead-letter topic.
+      # Same durability settings as the producer service.
+      acks: all
+      properties:
+        enable.idempotence: true
+        request.timeout.ms: 15000
+        delivery.timeout.ms: 30000
+        max.block.ms: 15000
+
+  # --- MongoDB (the URI comes from the profile): the consumer's OWN database -------
+  data:
+    mongodb:
+      auto-index-creation: true
+
+server:
+  port: 8080
+  # Finish in-flight requests and let the Kafka consumer commit before the pod dies.
+  shutdown: graceful
+  # Don't leak framework details in error bodies.
+  error:
+    include-message: never
+    include-stacktrace: never
+    include-exception: false
+
+# --- App ---------------------------------------------------------------------
+app:
+  topic: ${APP_TOPIC:event-console}
+  # One consumer thread per partition: the most parallelism a consumer group can use.
+  consumer-concurrency: ${app.topic-partitions}
+  consumer-max-retries: 5
+  consumer-backoff-initial-ms: 500
+  consumer-backoff-max-ms: 5000
+  # The MongoDB copy is a read model; Kafka is the system of record. Expire it.
+  events-ttl: ${APP_EVENTS_TTL:7d}
+
+# --- Observability -----------------------------------------------------------
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+
+logging:
+  level:
+    org.apache.kafka: WARN
+    org.mongodb.driver: WARN

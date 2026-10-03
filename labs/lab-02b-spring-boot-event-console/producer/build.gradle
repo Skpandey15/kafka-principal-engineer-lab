@@ -1,0 +1,118 @@
+// Lab 02b -- Event Console, PRODUCER service.
+//
+// Publishes events to Kafka on request (bulk, generated or pasted) and keeps an audit log of
+// what Kafka acknowledged. It does NOT consume, read the events back, or touch the consumer's
+// data: that is the consumer service, deployed, scaled and failed independently.
+//
+// Its own Gradle project (own wrapper, own versions), like every lab. Spring Boot / Spring
+// Kafka versions match lab-14.
+
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '4.1.1'
+    id 'io.spring.dependency-management' version '1.1.7'
+}
+
+group = 'com.kafkalab'
+version = '0.1.0'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(26)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-webmvc'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    // Boot 4 bundles spring-kafka + the spring.kafka.* autoconfiguration
+    // (spring-boot-kafka) in one starter; lab-14 wires the two by hand to
+    // show why the second artifact exists.
+    implementation 'org.springframework.boot:spring-boot-starter-kafka'
+    implementation 'org.springframework.boot:spring-boot-starter-data-mongodb'
+
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+
+    // Real broker + real MongoDB in the tests -- never a mocked
+    // KafkaTemplate or an embedded fake database as the primary strategy.
+    testImplementation 'org.testcontainers:testcontainers:2.0.5'
+    testImplementation 'org.testcontainers:testcontainers-junit-jupiter:2.0.5'
+    testImplementation 'org.testcontainers:testcontainers-kafka:2.0.5'
+    testImplementation 'org.testcontainers:testcontainers-mongodb:2.0.5'
+}
+
+// --- Tests: fast unit tests vs. Docker-backed integration tests --------------------------
+//
+// `test`            unit tests; need nothing but a JDK, so `build` works on any machine
+//                   (an IDE on Windows with no Docker engine, a fresh laptop, ...).
+// `integrationTest` the Testcontainers suite (real Kafka + real MongoDB); needs Docker.
+//                   Part of `check`/`build`, with one deliberate asymmetry:
+//                     * in CI (CI or JENKINS_URL is set) it ALWAYS runs, so a broken or missing
+//                       Docker fails the build instead of producing a false green;
+//                     * on a developer machine with no reachable Docker it is SKIPPED with a
+//                       loud warning, so `build` still succeeds.
+def inCi = System.getenv('CI') != null || System.getenv('JENKINS_URL') != null
+
+def dockerReachable = {
+    try {
+        def process = new ProcessBuilder('docker', 'info', '--format', '{{.ServerVersion}}')
+                .redirectErrorStream(true).start()
+        process.inputStream.text
+        return process.waitFor(20, java.util.concurrent.TimeUnit.SECONDS) && process.exitValue() == 0
+    } catch (Exception ignored) {
+        return false
+    }
+}
+
+tasks.named('test') {
+    useJUnitPlatform {
+        excludeTags 'integration'
+    }
+    timeout = java.time.Duration.ofMinutes(3)
+    testLogging {
+        events = ['passed', 'skipped', 'failed']
+        exceptionFormat = 'full'
+    }
+}
+
+tasks.register('integrationTest', Test) {
+    group = 'verification'
+    description = 'Docker-backed integration tests (real Kafka + MongoDB via Testcontainers).'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform {
+        includeTags 'integration'
+    }
+    shouldRunAfter tasks.named('test')
+    timeout = java.time.Duration.ofMinutes(10)
+    testLogging {
+        events = ['passed', 'skipped', 'failed']
+        exceptionFormat = 'full'
+    }
+    onlyIf {
+        if (inCi) {
+            return true
+        }
+        boolean ok = dockerReachable()
+        if (!ok) {
+            logger.warn('*** integrationTest SKIPPED: no Docker engine is reachable from this shell. ***')
+            logger.warn('*** Unit tests ran. To run the Kafka/MongoDB integration tests use a shell with Docker')
+            logger.warn('*** (for example WSL: ./gradlew integrationTest). CI never skips them. ***')
+        }
+        return ok
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('integrationTest')
+}
+
+tasks.named('bootJar') {
+    archiveFileName = 'event-console-producer.jar'
+}

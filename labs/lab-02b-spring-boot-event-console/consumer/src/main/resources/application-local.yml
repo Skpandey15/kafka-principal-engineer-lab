@@ -1,0 +1,23 @@
+# Profile: local -- the consumer runs on your machine (IDE or `./gradlew bootRun`) and talks to
+# Kafka and MongoDB on localhost. Nothing here needs secrets.
+#
+#   Kafka   localhost:9092  from platform/kafka (docker compose) OR the k3d single-node Kafka,
+#                           both of which publish the broker on that exact host port
+#   MongoDB localhost:27017 from `docker compose -f docker-compose.mongo.yml up -d`
+#                           (the producer folder has it), no authentication
+#
+# Point it elsewhere without editing this file:  KAFKA_BOOTSTRAP=...  MONGODB_URI=...
+spring:
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+  mongodb:
+    uri: ${MONGODB_URI:mongodb://localhost:27017/eventconsole_consumer}
+
+app:
+  topic-partitions: 3
+  topic-replicas: 1
+  topic-min-insync-replicas: 1
+
+logging:
+  level:
+    com.kafkalab: DEBUG

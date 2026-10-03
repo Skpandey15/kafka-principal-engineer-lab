@@ -1,0 +1,41 @@
+# Profile: aws (producer) -- shaped for Amazon MSK (Kafka) and Amazon DocumentDB / MongoDB Atlas.
+#
+# NOT VERIFIED AGAINST REAL AWS SERVICES. This repository's labs run on a laptop; this profile
+# is written to the documented MSK/DocumentDB settings and is covered only by a unit test that
+# the properties bind (ProfilesTest). Treat it as a starting point and test it in your account.
+#
+# Everything environment-specific is REQUIRED from the environment (no defaults), so a
+# half-configured deployment fails at startup -- naming what is missing -- rather than silently
+# connecting to localhost:
+#
+#   KAFKA_BOOTSTRAP        MSK bootstrap brokers for SASL/SCRAM over TLS (port 9096),
+#                          e.g. b-1.xxx.kafka.us-east-1.amazonaws.com:9096,b-2...:9096
+#   KAFKA_SASL_JAAS_CONFIG org.apache.kafka.common.security.scram.ScramLoginModule required
+#                          username="..." password="...";
+#                          -> inject from AWS Secrets Manager (ECS `secrets`, EKS CSI driver /
+#                             External Secrets). Never put it in an image or in git.
+#   MONGODB_URI            DocumentDB, e.g.
+#                          mongodb://USER:PASS@cluster.xxx.docdb.amazonaws.com:27017/eventconsole
+#                          ?tls=true&replicaSet=rs0&readPreference=secondaryPreferred&retryWrites=false
+#                          (DocumentDB does not support retryWrites, and needs the Amazon CA
+#                          bundle in the JVM trust store -- bake it into the image.)
+#
+# MSK IAM authentication (AWS_MSK_IAM) is NOT configured: it needs the aws-msk-iam-auth library,
+# which this project does not depend on.
+spring:
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP}
+    properties:
+      security.protocol: SASL_SSL
+      sasl.mechanism: SCRAM-SHA-512
+      sasl.jaas.config: ${KAFKA_SASL_JAAS_CONFIG}
+  mongodb:
+    uri: ${MONGODB_URI}
+
+app:
+  # MSK spreads brokers over 3 AZs: replicate to 3 and require 2 in sync, so one broker/AZ can
+  # fail without losing acknowledged writes (acks=all is already set in application.yml).
+  # Partition count is a capacity decision; size it for your throughput and consumer count.
+  topic-partitions: ${APP_TOPIC_PARTITIONS:6}
+  topic-replicas: 3
+  topic-min-insync-replicas: 2
