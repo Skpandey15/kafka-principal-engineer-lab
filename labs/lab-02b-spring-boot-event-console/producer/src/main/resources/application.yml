@@ -1,0 +1,64 @@
+# Producer service -- settings common to every environment. Anything that differs between a
+# laptop, a k3d cluster and AWS lives in application-{local,k3d,aws}.yml -- activate one with
+#   SPRING_PROFILES_ACTIVE=local|k3d|aws        (or --spring.profiles.active=...)
+# With nothing set, `local` is used so `./gradlew bootRun` just works.
+spring:
+  application:
+    name: event-console-producer
+  profiles:
+    default: local
+
+  # --- Kafka (connection details come from the profile) ----------------------
+  kafka:
+    producer:
+      # Durability over latency. Idempotence is on by default in the Kafka 4 client, which
+      # also requires acks=all and retries -- stated here so it is explicit.
+      acks: all
+      compression-type: lz4
+      properties:
+        enable.idempotence: true
+        linger.ms: 10
+        max.block.ms: 15000
+        # Kafka refuses to even construct a producer unless
+        # delivery.timeout.ms >= linger.ms + request.timeout.ms.
+        request.timeout.ms: 15000
+        delivery.timeout.ms: 30000
+
+  # --- MongoDB (the URI comes from the profile): the producer's OWN database -------
+  data:
+    mongodb:
+      auto-index-creation: true
+
+server:
+  port: 8080
+  # Finish in-flight requests before the pod dies.
+  shutdown: graceful
+  # Don't leak framework details in error bodies.
+  error:
+    include-message: never
+    include-stacktrace: never
+    include-exception: false
+
+# --- App ---------------------------------------------------------------------
+app:
+  topic: ${APP_TOPIC:event-console}
+  max-bulk-events: 50000
+  # Publish-job audit records expire; the events themselves live in Kafka.
+  jobs-ttl: ${APP_JOBS_TTL:30d}
+
+# --- Observability -----------------------------------------------------------
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+
+logging:
+  level:
+    org.apache.kafka: WARN
+    org.mongodb.driver: WARN

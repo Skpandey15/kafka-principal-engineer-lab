@@ -29,7 +29,8 @@
 
 def selfContainedLabs = [
     'lab-02-native-java-producer-consumer',
-    'lab-02b-spring-boot-event-console',
+    'lab-02b-spring-boot-event-console/producer',
+    'lab-02b-spring-boot-event-console/consumer',
     'lab-03-partitioning-ordering',
     'lab-04-consumer-groups-rebalancing',
     'lab-05-offset-management-delivery-semantics',
@@ -54,8 +55,10 @@ def connectPluginLabs = [
     'lab-11-transactional-outbox',
 ]
 
+// `lab` is a path relative to labs/ -- a lab folder, or a service inside one
+// (lab-02b has two independent Gradle projects: producer/ and consumer/).
 def runGradleTest(String lab) {
-    dir(lab) {
+    dir("labs/${lab}") {
         sh 'chmod +x gradlew'
         try {
             // `check` = `test` for most labs; for lab-02b it also runs the Docker-backed
@@ -174,7 +177,7 @@ pipeline {
                         }
                     }
 
-                    // lab-02b's React UI: the Gradle test above covers the backend only.
+                    // lab-02b's React UI: the Gradle projects above cover the two backend services only.
                     // This proves the UI still installs from its lockfile and builds. Runs
                     // in a throwaway node container as the agent's own user, so nothing in
                     // the workspace ends up root-owned.
