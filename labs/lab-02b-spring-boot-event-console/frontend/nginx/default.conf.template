@@ -1,0 +1,55 @@
+server {
+    listen 8080;
+    server_name _;
+    server_tokens off;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Matches the backend's own 8 MB request cap.
+    client_max_body_size 8m;
+
+    gzip on;
+    gzip_types text/css application/javascript application/json image/svg+xml;
+    gzip_min_length 1024;
+
+    # Resolve the backend at request time (not once at startup), so nginx neither
+    # refuses to start while the backend is down nor keeps a stale pod IP after it
+    # restarts. nginx's resolver ignores the pod's DNS search domains, so BACKEND_UPSTREAM
+    # must be a fully-qualified name. Both values are filled in from the environment
+    # when the container starts (see Dockerfile).
+    resolver ${DNS_RESOLVER} valid=10s ipv6=off;
+
+    location /api/ {
+        include /etc/nginx/snippets/security-headers.conf;
+        set $backend ${BACKEND_UPSTREAM};
+        proxy_pass $backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 5s;
+        # A 50,000-event bulk publish waits for every broker ack (up to 60s server-side).
+        proxy_read_timeout 90s;
+    }
+
+    # Fingerprinted build assets never change under the same name.
+    location /assets/ {
+        include /etc/nginx/snippets/security-headers.conf;
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+        try_files $uri =404;
+    }
+
+    location = /healthz {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    # Single-page app: unknown paths fall back to index.html, which must never be cached.
+    location / {
+        include /etc/nginx/snippets/security-headers.conf;
+        add_header Cache-Control "no-cache" always;
+        try_files $uri /index.html;
+    }
+}
