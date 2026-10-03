@@ -12,14 +12,17 @@ async function call(path, options = {}) {
 
 export const getConfig = () => call('/config')
 export const getStats = () => call('/events/stats')
+export const getConsumerConfig = () => call('/events/config')
+export const requeueEvent = (id) => call(`/events/${encodeURIComponent(id)}/requeue`, { method: 'POST' })
 export const getJobs = (limit = 8) => call(`/jobs?limit=${limit}`)
 export const clearEvents = () => call('/events', { method: 'DELETE' })
 export const publishBulk = (request) =>
   call('/publish/bulk', { method: 'POST', body: JSON.stringify(request) })
 
-export function getEvents({ key, partition, q, page, size }) {
+export function getEvents({ key, partition, q, status, page, size }) {
   const params = new URLSearchParams({ page, size })
   if (key) params.set('key', key)
+  if (status) params.set('status', status)
   if (partition !== '' && partition != null) params.set('partition', partition)
   if (q) params.set('q', q)
   return call('/events?' + params.toString())

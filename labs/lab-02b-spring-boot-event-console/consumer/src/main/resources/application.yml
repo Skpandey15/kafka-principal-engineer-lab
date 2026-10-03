@@ -22,7 +22,7 @@ spring:
     listener:
       ack-mode: batch
     producer:
-      # The consumer only ever PRODUCES to publish poison records to the dead-letter topic.
+      # The consumer only ever PRODUCES to publish dead events to the dead-letter topic.
       # Same durability settings as the producer service.
       acks: all
       properties:
@@ -51,11 +51,28 @@ app:
   topic: ${APP_TOPIC:event-console}
   # One consumer thread per partition: the most parallelism a consumer group can use.
   consumer-concurrency: ${app.topic-partitions}
-  consumer-max-retries: 5
+  # When MongoDB itself is unreachable the consumer waits and retries forever with this backoff
+  # (an outage is not the event's fault, so nothing is skipped or dead-lettered).
   consumer-backoff-initial-ms: 500
   consumer-backoff-max-ms: 5000
-  # The MongoDB copy is a read model; Kafka is the system of record. Expire it.
+  # SUCCESS events are a read model (Kafka is the system of record), so they expire.
+  # FAILED and DEAD events never expire on their own.
   events-ttl: ${APP_EVENTS_TTL:7d}
+
+  # Events that fail processing are stored as FAILED and retried by the worker in this service.
+  retry:
+    enabled: ${APP_RETRY_ENABLED:true}
+    # Retries AFTER the first failed attempt. When the last one fails the event becomes DEAD.
+    max-retries: ${APP_RETRY_MAX:5}
+    # Wait before the first retry; doubles each time (5s, 10s, 20s, 40s, 80s) up to the cap.
+    backoff-initial-ms: ${APP_RETRY_BACKOFF_INITIAL_MS:5000}
+    backoff-max-ms: ${APP_RETRY_BACKOFF_MAX_MS:300000}
+    poll-interval-ms: 2000
+    # At most this many events per poll, so a large backlog cannot starve the dead-letter sweep.
+    batch-size: 50
+    # A claimed event is invisible to other workers this long; must exceed one processing attempt.
+    lease-ms: 60000
+    dlt-send-timeout-ms: 15000
 
 # --- Observability -----------------------------------------------------------
 management:
