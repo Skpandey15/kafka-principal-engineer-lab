@@ -1,6 +1,6 @@
 # Backend image. The jar is built by `./gradlew bootJar` (see platform-k8s/event-console/setup.sh),
 # so the image contains only a JRE and the app -- no build tools, no source.
-FROM eclipse-temurin:21-jre-alpine
+FROM eclipse-temurin:26-jre-alpine
 
 # Numeric UID so Kubernetes' runAsNonRoot can verify it without resolving a name.
 RUN addgroup -S -g 10001 app && adduser -S -u 10001 -G app app

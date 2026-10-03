@@ -19,8 +19,9 @@ group = 'com.kafkalab'
 version = '0.1.0'
 
 java {
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(26)
+    }
 }
 
 repositories {
