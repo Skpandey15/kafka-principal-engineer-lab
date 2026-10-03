@@ -1,0 +1,10 @@
+# Shell scripts, the Gradle wrapper and the Jenkinsfile must keep LF line
+# endings on every OS. On Windows, core.autocrlf=true otherwise checks them out
+# as CRLF, and bash then fails with "$'\r': command not found" / "set:
+# pipefail: invalid option name" -- in WSL, in Docker bind mounts, and on any
+# Linux Jenkins agent.
+*.sh            text eol=lf
+gradlew         text eol=lf
+Jenkinsfile     text eol=lf
+*.yaml          text eol=lf
+*.yml           text eol=lf

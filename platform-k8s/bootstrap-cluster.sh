@@ -38,7 +38,10 @@
 #                                                      run at the same time there)
 #   19191 -> 30191  platform-k8s/multi-cluster-dr    primary cluster (lab-19)
 #   19192 -> 30192  platform-k8s/multi-cluster-dr    secondary cluster (lab-19)
-#   8080  -> 30080  platform-k8s/kafka-ui            Kafbat UI (optional, secondary tooling)
+#   8088  -> 30080  platform-k8s/kafka-ui            Kafbat UI (optional, secondary tooling --
+#                                                      host 8088, not 8080: 8080 is a very common
+#                                                      host port, and a k3d cluster's own load balancer
+#                                                      on the same machine commonly claims it)
 
 set -euo pipefail
 
@@ -61,7 +64,7 @@ k3d cluster create "${CLUSTER_NAME}" \
   -p "9090:30090@server:0" -p "9308:30308@server:0" -p "3000:30300@server:0" \
   -p "9196:30196@server:0" \
   -p "19191:30191@server:0" -p "19192:30192@server:0" \
-  -p "8080:30080@server:0" \
+  -p "8088:30080@server:0" \
   --wait
 
 # A dedicated kubeconfig file, not the shared ~/.kube/config -- see
