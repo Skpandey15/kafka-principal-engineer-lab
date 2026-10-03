@@ -1,0 +1,55 @@
+# Ingress for the Event Console, via the k3s-bundled Traefik. Opt-in: see enable.sh.
+#
+# 1. HTTP: the React UI (and, through its nginx, /api) on http://localhost:8090
+# 2. TCP:  MongoDB for tools like MongoDB Compass on localhost:27017
+#
+# MongoDB is not HTTP, so a normal Ingress cannot carry it; Traefik's IngressRouteTCP can.
+# It is exposed unencrypted on the cluster's load balancer, bound to 127.0.0.1 on the host
+# (see enable.sh). The database's own authentication is the only gate -- fine for a local
+# lab, NOT how you would expose a database anywhere shared.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: event-console
+  namespace: event-console
+spec:
+  ingressClassName: traefik
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: event-console-frontend
+                port: { number: 8080 }
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRouteTCP
+metadata:
+  name: mongo
+  namespace: event-console
+spec:
+  entryPoints: ["mongo"]
+  routes:
+    # Plain (non-TLS) TCP has no SNI to match on, so this matches every connection.
+    - match: HostSNI(`*`)
+      services:
+        - name: mongo
+          port: 27017
+---
+# The existing policy lets only the API reach MongoDB. Traefik is a new caller, so it must be
+# allowed explicitly -- and only Traefik, not the whole kube-system namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mongo-from-traefik
+  namespace: event-console
+spec:
+  podSelector: { matchLabels: { app: mongo } }
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+          podSelector: { matchLabels: { app.kubernetes.io/name: traefik } }
+      ports: [{ port: 27017 }]

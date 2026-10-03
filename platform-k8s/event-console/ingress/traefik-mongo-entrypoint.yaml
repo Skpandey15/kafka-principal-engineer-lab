@@ -1,0 +1,19 @@
+# k3s ships Traefik with only HTTP(S) entrypoints. This adds a raw-TCP entrypoint on 27017
+# so MongoDB (which is not HTTP) can be routed through the same ingress controller.
+#
+# HelmChartConfig is k3s' supported way to customize its bundled Traefik chart; k3s re-runs
+# the Helm upgrade and Traefik restarts briefly (HTTP ingress blips for a few seconds).
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    ports:
+      mongo:
+        port: 27017
+        protocol: TCP
+        expose:
+          default: true
+        exposedPort: 27017
