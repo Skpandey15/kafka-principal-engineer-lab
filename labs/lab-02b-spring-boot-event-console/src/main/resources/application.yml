@@ -1,0 +1,80 @@
+# Settings common to every environment. Anything that differs between a laptop, a k3d cluster
+# and AWS lives in application-{local,k3d,aws}.yml -- activate one with
+#   SPRING_PROFILES_ACTIVE=local|k3d|aws        (or --spring.profiles.active=...)
+# With nothing set, `local` is used so `./gradlew bootRun` just works.
+spring:
+  application:
+    name: event-console
+  profiles:
+    default: local
+
+  # --- Kafka (connection details come from the profile) ----------------------
+  kafka:
+    producer:
+      # Durability over latency. Idempotence is on by default in the Kafka 4 client, which
+      # also requires acks=all and retries -- stated here so it is explicit.
+      acks: all
+      compression-type: lz4
+      properties:
+        enable.idempotence: true
+        linger.ms: 10
+        max.block.ms: 15000
+        # Kafka refuses to even construct a producer unless
+        # delivery.timeout.ms >= linger.ms + request.timeout.ms.
+        request.timeout.ms: 15000
+        delivery.timeout.ms: 30000
+    consumer:
+      # Offsets are committed by the listener container only after the batch was stored
+      # (at-least-once); the Mongo write is idempotent, so a redelivery is harmless.
+      group-id: ${APP_CONSUMER_GROUP:event-console-group}
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      max-poll-records: 500
+      properties:
+        max.poll.interval.ms: 300000
+    listener:
+      ack-mode: batch
+
+  # --- MongoDB (the URI comes from the profile) ------------------------------
+  data:
+    mongodb:
+      auto-index-creation: true
+
+server:
+  port: 8080
+  # Finish in-flight requests and let the Kafka consumer commit before the pod dies.
+  shutdown: graceful
+  # Don't leak framework details in error bodies.
+  error:
+    include-message: never
+    include-stacktrace: never
+    include-exception: false
+
+# --- App ---------------------------------------------------------------------
+app:
+  topic: ${APP_TOPIC:event-console}
+  # One consumer thread per partition: the most parallelism a consumer group can use.
+  consumer-concurrency: ${app.topic-partitions}
+  max-bulk-events: 50000
+  consumer-max-retries: 5
+  consumer-backoff-initial-ms: 500
+  consumer-backoff-max-ms: 5000
+  # The MongoDB copy is a read model; Kafka is the system of record. Expire it.
+  events-ttl: ${APP_EVENTS_TTL:7d}
+
+# --- Observability -----------------------------------------------------------
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+
+logging:
+  level:
+    org.apache.kafka: WARN
+    org.mongodb.driver: WARN

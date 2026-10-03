@@ -3,7 +3,7 @@
 ## Quick Summary
 
 - **Why this lab:** Lab-02 taught the native producer/consumer client with no framework. This lab puts the same two ideas — a producer whose callback is the only proof of durability, and a consumer whose committed offset is its only memory — behind a Spring Boot REST API, a MongoDB read model and a React UI, and hardens it the way a real service would be: idempotent writes, a dead-letter topic, outage-aware retries, non-root containers, secrets, network policies.
-- **How to run:** `platform-k8s/kafka/setup.sh` then `platform-k8s/event-console/setup.sh`, then open **http://localhost:8089**. Publish events in bulk (generated or pasted) and watch them arrive in the table. `./gradlew test` for the Testcontainers suite (real Kafka + real MongoDB).
+- **How to run:** `platform-k8s/kafka/setup.sh` then `platform-k8s/event-console/setup.sh`, then open **http://localhost:8089**. Publish events in bulk (generated or pasted) and watch them arrive in the table. `./gradlew build` for the unit tests plus the Testcontainers suite (real Kafka + real MongoDB).
 - **Expected input:** Docker, k3d, kubectl, JDK 26 (to build); a count and key strategy (or pasted `key|value` lines) in the UI.
 - **Expected output:** `1,000 of 1,000 acknowledged by Kafka` with the per-partition split the broker actually used, then the same events appearing in the consumed-events table (stored in MongoDB), filterable by key, partition and value.
 - **What we learned:** see [Principal Engineer questions](#principal-engineer-questions) and the measured [failure injection](#failure-injection) results below.
@@ -17,7 +17,7 @@ This lab depends on lab-02 and does not modify it. Spring Kafka itself is studie
 ## Prerequisites
 
 - The single-node Kafka from `platform-k8s/kafka/` (or any Kafka on `localhost:9092` for local runs).
-- JDK 26, Docker, k3d, kubectl. Node 22 only if you run the UI outside a container.
+- JDK 26 (Gradle downloads it automatically if it is missing), Docker for the integration tests and k3d, kubectl. Node 22 only if you run the UI outside a container.
 - Familiarity with lab-02 (callbacks, partitions, committed offsets) and lab-12 (idempotent consumer, DLQ).
 
 ## Architecture
@@ -60,22 +60,57 @@ platform-k8s/event-console/setup.sh      # builds the jar + 2 images, imports th
 
 `setup.sh` generates the MongoDB password on first run (random, stored only in a Kubernetes Secret, never printed or committed) and adds the 8089 port mapping in place on a cluster created before this lab existed. `SKIP_BUILD=1` reuses the images.
 
-**Run locally instead** (MongoDB in Docker, app and UI on the host):
+### Profiles: `local`, `k3d`, `aws`
+
+One build, three environments. Pick one with `SPRING_PROFILES_ACTIVE=local|k3d|aws`
+(or `--spring.profiles.active=...`); with nothing set, **`local`** is used.
+
+| Profile | Where the app runs | Kafka | MongoDB | Needs from you |
+|---|---|---|---|---|
+| `local` (default) | Your machine: IDE or `./gradlew bootRun` | `localhost:9092` | `mongodb://localhost:27017/eventconsole`, no auth | Kafka on 9092 (from `platform/kafka` or the k3d Kafka) and Mongo (`docker compose -f docker-compose.mongo.yml up -d`). Override with `KAFKA_BOOTSTRAP` / `MONGODB_URI`. |
+| `k3d` | A pod in the k3d cluster | `kafka.kafka.svc.cluster.local:19092` (the in-cluster listener, not `localhost:9092`) | From the `event-console-mongo` Secret | `MONGODB_URI` (the manifest injects it). Set automatically by `platform-k8s/event-console/setup.sh`. |
+| `aws` | Containers on AWS (ECS/EKS) | Amazon MSK: `SASL_SSL` + `SCRAM-SHA-512`, RF 3, `min.insync.replicas` 2 | Amazon DocumentDB / Atlas via `MONGODB_URI` | `KAFKA_BOOTSTRAP`, `KAFKA_SASL_JAAS_CONFIG`, `MONGODB_URI` (all required, **no defaults**) |
+
+The `k3d` and `aws` profiles have no defaults for endpoints or secrets on purpose: if one is
+missing the app refuses to start and **names it**, instead of quietly connecting to localhost:
+
+```text
+Missing required configuration for profile(s) aws:
+  - 'spring.mongodb.uri': Could not resolve placeholder 'MONGODB_URI' ...
+```
+
+**The `aws` profile is not verified against real AWS services.** It follows the documented MSK and
+DocumentDB settings and is covered by `ProfilesTest` (the properties bind and mean what they
+claim), but this repository never ran it against MSK or DocumentDB. MSK IAM authentication is not
+configured (it needs the `aws-msk-iam-auth` library); DocumentDB needs `retryWrites=false` and the
+Amazon CA bundle in the JVM trust store.
+
+**Run on your machine (profile `local`):**
 
 ```bash
-docker run -d --name ec-mongo -p 27017:27017 mongo:7.0
-./gradlew bootRun                      # API on :8080, Kafka on localhost:9092
-cd frontend && npm install && npm run dev   # UI on :5173, proxies /api to :8080
+docker compose -f docker-compose.mongo.yml up -d          # MongoDB on localhost:27017
+./gradlew bootRun                                         # API on :8080
+cd frontend && npm install && npm run dev                 # UI on :5173, proxies /api to :8080
 ```
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `./gradlew test` | 11 integration tests against real Kafka + MongoDB (Testcontainers) |
+| `./gradlew build` | Compile, run the **unit tests** and the **integration tests**, assemble. Works on any machine: with no Docker it skips the integration tests *with a loud warning* and still succeeds. |
+| `./gradlew test` | 25 unit tests only (no Docker, no network). Includes `ProfilesTest`, which loads each profile's real properties. |
+| `./gradlew integrationTest` | 11 integration tests against real Kafka + MongoDB (Testcontainers). Needs Docker; run it from a shell that has it (WSL). |
 | `./gradlew bootJar` | Builds `build/libs/event-console.jar` |
 | `cd frontend && npm run build` | Production build of the UI |
 | `platform-k8s/event-console/cleanup.sh [--wipe]` | Remove (and with `--wipe`, also delete data and the Secret) |
+
+### Why `build` works without Docker, but CI never skips the integration tests
+
+A build that fails on a laptop without Docker teaches people to run `-x test`. A build that
+silently skips the Docker tests in CI produces a green check for code that was never run against
+Kafka. This project does neither: `integrationTest` is part of `check`/`build`, is skipped locally
+only when no Docker engine is reachable (with a warning), and is **always enforced when `CI` or
+`JENKINS_URL` is set** — there, a missing Docker is a failed build, not a skipped one.
 
 ## Implementation
 
@@ -159,7 +194,7 @@ Caveat, stated plainly: I cannot prove each of the three kills landed *mid-batch
 |---|---|
 | UI says "Backend unreachable" | API pod not ready: `kubectl -n event-console get pods`, then `logs deploy/event-console-backend`. |
 | `502 Bad Gateway` on `/api` | nginx cannot resolve the backend. `BACKEND_UPSTREAM` must be fully qualified (`…event-console.svc.cluster.local`) — nginx's resolver ignores search domains. |
-| API crashes at start: `delivery.timeout.ms should be equal to or larger than linger.ms + request.timeout.ms` | Producer timeout settings in `application.properties` violate Kafka's rule. |
+| API crashes at start: `delivery.timeout.ms should be equal to or larger than linger.ms + request.timeout.ms` | Producer timeout settings in `application.yml` violate Kafka's rule. |
 | API crash-loops on first deploy with `MongoTimeoutException` | MongoDB still initializing. The init container normally prevents this; check it ran. |
 | `port 8089` not reachable | Cluster created before this lab: `setup.sh` adds it with `k3d cluster edit … --port-add`; or recreate with `bootstrap-cluster.sh`. |
 | Events show but counts exceed what you published | The topic already held records; a fresh MongoDB + a *new* consumer group replays them. |

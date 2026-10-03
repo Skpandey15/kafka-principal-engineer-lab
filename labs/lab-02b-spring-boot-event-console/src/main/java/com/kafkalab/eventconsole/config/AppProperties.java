@@ -12,6 +12,7 @@ public record AppProperties(
         @NotBlank String topic,
         @Min(1) int topicPartitions,
         @Min(1) int topicReplicas,
+        @Min(1) int topicMinInsyncReplicas,
         @Min(1) int maxBulkEvents,
         @Min(0) int consumerMaxRetries,
         @Min(1) long consumerBackoffInitialMs,

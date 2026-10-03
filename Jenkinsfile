@@ -58,9 +58,12 @@ def runGradleTest(String lab) {
     dir(lab) {
         sh 'chmod +x gradlew'
         try {
-            sh './gradlew test --no-daemon'
+            // `check` = `test` for most labs; for lab-02b it also runs the Docker-backed
+            // integrationTest suite (always enforced in CI -- see that lab's build.gradle).
+            sh './gradlew check --no-daemon'
         } finally {
-            junit testResults: 'build/test-results/test/*.xml', allowEmptyResults: true
+            // */ covers both test/ and integrationTest/ result folders.
+            junit testResults: 'build/test-results/*/*.xml', allowEmptyResults: true
         }
     }
 }
