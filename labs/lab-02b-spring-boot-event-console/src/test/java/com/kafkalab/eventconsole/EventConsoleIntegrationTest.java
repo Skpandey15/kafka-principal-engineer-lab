@@ -20,6 +20,7 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -44,6 +45,7 @@ import com.kafkalab.eventconsole.repo.EventQueryRepository;
  * Nothing mocked: the HTTP call publishes to Kafka, the @KafkaListener consumes
  * it, and the assertions read what actually landed in MongoDB through the API.
  */
+@Tag("integration")
 @Testcontainers
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class EventConsoleIntegrationTest {

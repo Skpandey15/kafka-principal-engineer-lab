@@ -1,6 +1,7 @@
 package com.kafkalab.eventconsole.config;
 
 import org.apache.kafka.clients.admin.NewTopic;
+import org.apache.kafka.common.config.TopicConfig;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.TopicBuilder;
@@ -16,6 +17,7 @@ public class KafkaTopicConfig {
         return TopicBuilder.name(props.topic())
                 .partitions(props.topicPartitions())
                 .replicas(props.topicReplicas())
+                .config(TopicConfig.MIN_IN_SYNC_REPLICAS_CONFIG, String.valueOf(props.topicMinInsyncReplicas()))
                 .build();
     }
 
@@ -26,6 +28,7 @@ public class KafkaTopicConfig {
         return TopicBuilder.name(props.deadLetterTopic())
                 .partitions(props.topicPartitions())
                 .replicas(props.topicReplicas())
+                .config(TopicConfig.MIN_IN_SYNC_REPLICAS_CONFIG, String.valueOf(props.topicMinInsyncReplicas()))
                 .build();
     }
 }

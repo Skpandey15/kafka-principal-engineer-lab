@@ -1,0 +1,24 @@
+# Dependencies for the `local` profile that this lab does not get elsewhere: MongoDB.
+# Kafka on localhost:9092 comes from platform/kafka (docker compose) or the k3d single-node Kafka.
+#
+#   docker compose -f docker-compose.mongo.yml up -d
+#   ./gradlew bootRun                         # profile `local` is the default
+#   docker compose -f docker-compose.mongo.yml down -v
+#
+# No authentication: this is a throwaway laptop database. The k3d and aws profiles use credentials.
+services:
+  mongo:
+    image: mongo:7.0
+    container_name: event-console-mongo
+    ports:
+      - "127.0.0.1:27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+volumes:
+  mongo-data:
