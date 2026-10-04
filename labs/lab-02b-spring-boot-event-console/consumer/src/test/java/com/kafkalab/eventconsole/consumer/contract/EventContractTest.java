@@ -29,7 +29,7 @@ class EventContractTest {
     void start() {
         registry = new FakeSchemaRegistry().withJsonSchema(1, FakeSchemaRegistry.V1);
         contract = contractFor(registry.url());
-        processor = new ContractEventProcessor(contract);
+        processor = new ContractEventProcessor(contract, new LegacyHistory(propsFor(registry.url(), java.util.Map.of())), new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
     }
 
     @AfterEach
@@ -37,15 +37,68 @@ class EventContractTest {
         registry.close();
     }
 
-    private static EventContract contractFor(String url) {
+    private static AppProperties propsFor(String url, java.util.Map<Integer, Long> legacyUntilOffsets) {
         AppProperties.Retry retry = new AppProperties.Retry(true, 5, 5_000, 300_000, 2_000, 50, 60_000, 15_000);
-        AppProperties props = new AppProperties("orders", 3, 1, 1, 500, 5_000, Duration.ofDays(7), retry,
-                new AppProperties.Schema(url, 2_000, 5_000));
-        return new EventContract(new SchemaRegistryClient(props));
+        return new AppProperties("orders", 3, 1, 1, 500, 5_000, Duration.ofDays(7), retry,
+                new AppProperties.Schema(url, 2_000, 5_000, legacyUntilOffsets));
+    }
+
+    private static EventContract contractFor(String url) {
+        return new EventContract(new SchemaRegistryClient(propsFor(url, java.util.Map.of())));
     }
 
     private void process(String value, String schemaId) {
-        processor.process(new ConsumedEvent("k", value, schemaId));
+        processor.process(new ConsumedEvent("k", value, schemaId, 0, 100));
+    }
+
+    // --- replaying history from before the contract ------------------------------------------------
+
+    private ContractEventProcessor withLegacyBelow(java.util.Map<Integer, Long> offsets,
+            io.micrometer.core.instrument.MeterRegistry metrics) {
+        return new ContractEventProcessor(contract, new LegacyHistory(propsFor(registry.url(), offsets)), metrics);
+    }
+
+    @Test
+    void aHeaderlessRecordBelowTheCutoverIsLegacyHistoryAndIsAcceptedAsItIs() {
+        var metrics = new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+        ContractEventProcessor p = withLegacyBelow(java.util.Map.of(0, 100L), metrics);
+
+        // Anything at all: free text, an empty value, a JSON array -- it predates the contract.
+        assertThatCode(() -> p.process(new ConsumedEvent(null, "random text from before schemas", null, 0, 99)))
+                .doesNotThrowAnyException();
+        assertThatCode(() -> p.process(new ConsumedEvent("k", null, null, 0, 0))).doesNotThrowAnyException();
+        assertThat(metrics.counter("eventconsole.consume.legacy").count()).isEqualTo(2);
+    }
+
+    @Test
+    void theCutoverIsExclusiveSoTheFirstRecordAtItNeedsAHeader() {
+        ContractEventProcessor p = withLegacyBelow(java.util.Map.of(0, 100L), new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
+
+        assertThatThrownBy(() -> p.process(new ConsumedEvent("k", "{\"id\":\"x\"}", null, 0, 100)))
+                .isInstanceOf(EventProcessingException.class).hasMessageContaining("no x-schema-id header");
+    }
+
+    @Test
+    void theCutoverIsPerPartition() {
+        ContractEventProcessor p = withLegacyBelow(java.util.Map.of(0, 100L), new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
+
+        assertThatCode(() -> p.process(new ConsumedEvent("k", "old", null, 0, 5))).doesNotThrowAnyException();
+        // Partition 1 has no cut-over configured: nothing there is legacy.
+        assertThatThrownBy(() -> p.process(new ConsumedEvent("k", "old", null, 1, 5))).isInstanceOf(EventProcessingException.class);
+    }
+
+    @Test
+    void aRecordThatDoesCarryAHeaderIsHeldToItEvenInsideTheLegacyRange() {
+        ContractEventProcessor p = withLegacyBelow(java.util.Map.of(0, 100L), new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
+
+        assertThatThrownBy(() -> p.process(new ConsumedEvent("k", "{\"seq\":-1}", "1", 0, 5)))
+                .isInstanceOf(EventProcessingException.class).hasMessageStartingWith("violates schema 1:");
+    }
+
+    @Test
+    void withNoCutoverConfiguredNothingIsLegacyAndTheContractCoversTheWholeTopic() {
+        assertThatThrownBy(() -> process("old record", null)).isInstanceOf(EventProcessingException.class)
+                .hasMessageContaining("no x-schema-id header");
     }
 
     @Test

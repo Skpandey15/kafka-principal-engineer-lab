@@ -17,6 +17,7 @@ import org.springframework.web.context.request.WebRequest;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 import com.kafkalab.eventconsole.producer.contract.ContractUnavailableException;
 import com.kafkalab.eventconsole.producer.contract.ContractViolationException;
+import com.kafkalab.eventconsole.producer.publish.AuditUnavailableException;
 
 /**
  * Extends Spring's own handler so framework errors (404, 405, 415, ...) keep their
@@ -51,6 +52,14 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
                 "error", e.total() + " event(s) break the event contract (schema " + e.schemaId() + "); nothing was published",
                 "violations", e.violations(),
                 "total", e.total()));
+    }
+
+    /** The audit record could not be written first, so nothing was sent: safe to retry, unlike a failure after the send. */
+    @ExceptionHandler(AuditUnavailableException.class)
+    ResponseEntity<Map<String, String>> auditUnavailable(AuditUnavailableException e) {
+        log.warn("Refusing to publish: {}: {}", e.getMessage(), e.getCause() == null ? "" : e.getCause().getMessage());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(Map.of("error", "The audit store is unavailable, so nothing was published. It is safe to retry."));
     }
 
     /** No contract could be obtained: refuse rather than publish unchecked. Retryable, and not the caller's fault. */

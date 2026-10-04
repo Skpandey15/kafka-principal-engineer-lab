@@ -23,6 +23,7 @@ import org.springframework.dao.DataAccessResourceFailureException;
 import com.kafkalab.eventconsole.consumer.config.AppProperties;
 import com.kafkalab.eventconsole.consumer.contract.ContractEventProcessor;
 import com.kafkalab.eventconsole.consumer.contract.EventContract;
+import com.kafkalab.eventconsole.consumer.contract.LegacyHistory;
 import com.kafkalab.eventconsole.consumer.contract.SchemaRegistryClient;
 import com.kafkalab.eventconsole.consumer.model.EventDocument;
 import com.kafkalab.eventconsole.consumer.model.EventStatus;
@@ -51,7 +52,8 @@ class EventConsumerTest {
         registry = new FakeSchemaRegistry().withJsonSchema(1, FakeSchemaRegistry.V1);
         props = new AppProperties("orders", 3, 1, 1, 500, 5_000, Duration.ofDays(7), RETRY,
                 new AppProperties.Schema(registry.url(), 2_000, 5_000));
-        contractRules = new ContractEventProcessor(new EventContract(new SchemaRegistryClient(props)));
+        contractRules = new ContractEventProcessor(new EventContract(new SchemaRegistryClient(props)), new LegacyHistory(props),
+                new SimpleMeterRegistry());
         when(events.insertAllIgnoringDuplicates(anyList())).thenAnswer(inv -> ((List<?>) inv.getArgument(0)).size());
     }
 

@@ -44,6 +44,14 @@ app:
   topic: ${APP_TOPIC:event-console}
   max-bulk-events: 50000
 
+  # Every publish is recorded in the audit store BEFORE anything is sent (so the record exists even if
+  # this process dies mid-publish). required=true: if that write fails, nothing is sent (HTTP 503).
+  # required=false trades the guarantee for availability. A job still STARTED after interrupted-after
+  # is labelled INTERRUPTED: its process died and the outcome is unknown.
+  audit:
+    required: ${APP_AUDIT_REQUIRED:true}
+    interrupted-after: ${APP_AUDIT_INTERRUPTED_AFTER:10m}
+
   # The event contract. Every event is checked against the LATEST version of this subject before
   # anything is sent, and carries the id of the version it was checked against in an x-schema-id
   # header. Nothing is published if any event in a request violates it. The registry URL

@@ -94,7 +94,7 @@ public class EventConsumer {
         String error = null;
         String schemaId = schemaIdOf(record);
         try {
-            processor.process(new ConsumedEvent(record.key(), record.value(), schemaId));
+            processor.process(new ConsumedEvent(record.key(), record.value(), schemaId, record.partition(), record.offset()));
         } catch (InfrastructureUnavailableException outage) {
             // The Schema Registry (or a broken contract) is not this event's fault: do not record a
             // failure. Propagate so the whole batch waits and is retried, exactly like a MongoDB outage.

@@ -37,6 +37,8 @@ import org.testcontainers.mongodb.MongoDBContainer;
 import com.kafkalab.eventconsole.producer.contract.ContractUnavailableException;
 import com.kafkalab.eventconsole.producer.contract.EventContract;
 import com.kafkalab.eventconsole.producer.model.PublishJob;
+import com.kafkalab.eventconsole.producer.publish.PublishJobReaper;
+import com.kafkalab.eventconsole.producer.repo.PublishJobRepository;
 import com.kafkalab.eventconsole.producer.testsupport.FakeSchemaRegistry;
 
 /**
@@ -77,6 +79,12 @@ class ProducerIntegrationTest {
 
     @MockitoSpyBean
     EventContract contract;
+
+    @MockitoSpyBean
+    PublishJobRepository jobRepository;
+
+    @Autowired
+    PublishJobReaper reaper;
 
     private RestClient http() {
         return RestClient.create("http://localhost:" + port);
@@ -235,6 +243,85 @@ class ProducerIntegrationTest {
 
         assertThat(status).isEqualTo(503);
         assertThat(topicSize()).isEqualTo(before);
+    }
+
+    // --- the audit record: written first, replaced by the outcome, honest when MongoDB fails -------------
+
+    @Test
+    void aPublishLeavesOneAuditRowThatEndsCompleted() {
+        Map<String, Object> job = post(Map.of("mode", "GENERATE", "count", 6, "keyStrategy", "NONE"));
+
+        assertThat(job).containsEntry("status", "COMPLETED");
+        PublishJob stored = mongo.findById(job.get("id"), PublishJob.class);
+        assertThat(stored.status()).isEqualTo(PublishJob.COMPLETED);
+        assertThat(stored.acked()).isEqualTo(6);
+        assertThat(mongo.count(org.springframework.data.mongodb.core.query.Query.query(
+                org.springframework.data.mongodb.core.query.Criteria.where("_id").is(job.get("id"))), PublishJob.class))
+                .as("one row, replaced - not two").isEqualTo(1);
+    }
+
+    @Test
+    void ifTheAuditStoreIsDownBeforeThePublishNothingIsPublishedAndTheCallerIsToldToRetry() {
+        long before = topicSize();
+        org.mockito.Mockito.doThrow(new org.springframework.dao.DataAccessResourceFailureException("simulated: mongo down"))
+                .when(jobRepository).save(org.mockito.ArgumentMatchers.any(PublishJob.class));
+
+        Map<String, Object> refusal = http().post().uri("/api/publish/bulk").body(Map.of("mode", "GENERATE", "count", 5))
+                .exchange((req, res) -> {
+                    assertThat(res.getStatusCode().value()).isEqualTo(503);
+                    return res.bodyTo(new ParameterizedTypeReference<Map<String, Object>>() {
+                    });
+                });
+
+        assertThat((String) refusal.get("error")).contains("nothing was published").contains("safe to retry");
+        assertThat(topicSize()).as("not a single event reached Kafka").isEqualTo(before);
+    }
+
+    @Test
+    void ifTheOutcomeCannotBeRecordedTheEventsStandTheCallerIsToldTheTruthAndTheRowIsLaterLabelledInterrupted() {
+        long before = topicSize();
+        java.util.concurrent.atomic.AtomicInteger saves = new java.util.concurrent.atomic.AtomicInteger();
+        org.mockito.Mockito.doAnswer(invocation -> {
+            if (saves.incrementAndGet() >= 2) {
+                throw new org.springframework.dao.DataAccessResourceFailureException("simulated: mongo went away mid-publish");
+            }
+            // A repository is an interface proxy, so there is no real method to call: write it ourselves.
+            return mongo.save(invocation.<PublishJob>getArgument(0));
+        }).when(jobRepository).save(org.mockito.ArgumentMatchers.any(PublishJob.class));
+
+        Map<String, Object> job = post(Map.of("mode", "GENERATE", "count", 9, "keyStrategy", "NONE"));
+
+        // 200, not an error: the events were written, and an error would invite a retry that writes them again.
+        assertThat(job).containsEntry("status", "COMPLETED_UNRECORDED").containsEntry("acked", 9);
+        assertThat(topicSize() - before).isEqualTo(9);
+        // The database kept the write-ahead row: started, outcome unknown.
+        PublishJob stored = mongo.findById(job.get("id"), PublishJob.class);
+        assertThat(stored.status()).isEqualTo(PublishJob.STARTED);
+        assertThat(stored.requested()).isEqualTo(9);
+
+        // After the grace period nobody can mistake it for a publish still in progress.
+        assertThat(reaper.sweep(java.time.Instant.now().plus(java.time.Duration.ofHours(1)))).isGreaterThanOrEqualTo(1);
+        assertThat(mongo.findById(job.get("id"), PublishJob.class).status()).isEqualTo(PublishJob.INTERRUPTED);
+    }
+
+    @Test
+    void theReaperOnlyLabelsOldUnfinishedJobsAndLeavesEverythingElseAlone() {
+        java.time.Instant now = java.time.Instant.now();
+        mongo.insert(job("reap-old-started", now.minus(java.time.Duration.ofHours(1)), PublishJob.STARTED));
+        mongo.insert(job("reap-fresh-started", now.minusSeconds(5), PublishJob.STARTED));
+        mongo.insert(job("reap-old-completed", now.minus(java.time.Duration.ofHours(1)), PublishJob.COMPLETED));
+
+        long marked = reaper.sweep(now);
+
+        assertThat(marked).isEqualTo(1);
+        assertThat(mongo.findById("reap-old-started", PublishJob.class).status()).isEqualTo(PublishJob.INTERRUPTED);
+        assertThat(mongo.findById("reap-fresh-started", PublishJob.class).status()).isEqualTo(PublishJob.STARTED);
+        assertThat(mongo.findById("reap-old-completed", PublishJob.class).status()).isEqualTo(PublishJob.COMPLETED);
+        assertThat(reaper.sweep(now)).as("idempotent").isZero();
+    }
+
+    private static PublishJob job(String id, java.time.Instant createdAt, String status) {
+        return new PublishJob(id, createdAt, TOPIC, "GENERATE", "NONE", 1, 0, 0, 0, 1, 1, Map.of(), null, status);
     }
 
     @Test

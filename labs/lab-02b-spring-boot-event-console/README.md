@@ -74,7 +74,7 @@ platform-k8s/kafka/setup.sh
 platform-k8s/event-console/setup.sh      # builds 2 jars + 3 images, imports them, deploys
 ```
 
-`setup.sh` generates random passwords on first run — MongoDB `root`, one per service, and the two UI logins (`viewer`, `operator`) — stores each only in a Kubernetes Secret, and never prints or commits them (`credentials.sh` prints the two UI logins when you ask). A Job then creates the two least-privilege MongoDB users (idempotent, so it also works against an existing volume), the Schema Registry starts, and `contracts/register.sh` registers the event contract before the services take traffic. Switches: `SKIP_BUILD=1` reuses the images; `SINGLE_REPLICA=1` runs one replica of each service instead of two; `MONGO_HA=1` runs MongoDB as a three-member replica set. The images are tagged `0.4.2`; **bump the tag when you change code**, otherwise Kubernetes sees an unchanged manifest and keeps running the old image (or run `kubectl -n event-console rollout restart deploy/<name>`).
+`setup.sh` generates random passwords on first run — MongoDB `root`, one per service, and the two UI logins (`viewer`, `operator`) — stores each only in a Kubernetes Secret, and never prints or commits them (`credentials.sh` prints the two UI logins when you ask). A Job then creates the two least-privilege MongoDB users (idempotent, so it also works against an existing volume), the Schema Registry starts, and `contracts/register.sh` registers the event contract before the services take traffic. Switches: `SKIP_BUILD=1` reuses the images; `SINGLE_REPLICA=1` runs one replica of each service instead of two; `MONGO_HA=1` runs MongoDB as a three-member replica set. The images are tagged `0.5.0`; **bump the tag when you change code**, otherwise Kubernetes sees an unchanged manifest and keeps running the old image (or run `kubectl -n event-console rollout restart deploy/<name>`).
 
 ### Layout
 
@@ -225,18 +225,97 @@ sequenceDiagram
 
 **Changing the contract.** `contracts/check-compat.sh <file>` asks the registry whether a candidate is compatible with the latest version *without* registering it (exit 0 / 1, usable in CI); `contracts/register.sh <file>` registers it and is refused (HTTP 409) if it is not. `contracts/examples/` has one of each: `event-v2-compatible.json` adds an optional `customerId`; `event-v3-breaking.json` adds a *required* `region`, which data written under v1 cannot satisfy. Evolving a BACKWARD contract means: register the new version, upgrade **consumers** first, then producers.
 
+### Replaying history that predates the contract
+
+Records written before the contract existed have no `x-schema-id`. A producer that **bypasses the service** also writes records with no `x-schema-id`. A replay sees the same thing in both, and the two must not be treated alike:
+
+- **Strict for everything header-less** (the first version of this lab): replaying the topic turned 125 perfectly good pre-contract events into `FAILED`, then `DEAD`, and an operator had to requeue them for nothing.
+- **Lenient for everything header-less**: replay works, but it reopens the exact hole the contract closes. Anything that skips the header skips validation.
+
+So the line between "legacy" and "bypass" has to be drawn on something a bypassing producer **cannot forge**:
+
+| Option | Verdict |
+|---|---|
+| Treat a missing header as a named legacy schema | Header-less records are accepted forever, from anyone. This is the lenient case. |
+| A timestamp cut-off | The producer sets the record timestamp (`CreateTime`), so a bad record can claim to be old. |
+| A header such as `x-legacy: true` | Whoever writes the record writes the header. |
+| Backfill `x-schema-id` onto the old records | Kafka records are immutable; it means rewriting history into a new topic. Right for a migration, wrong as a replay policy. |
+| **A per-partition cut-over offset** | The broker assigns the offset when it appends the record. No producer chooses it and new traffic can never land below it. **Chosen.** |
+
+**How it works.** `app.schema.legacy-until-offsets` maps each partition to the first offset that is *not* legacy. In the consumer, a record with no header whose offset is below its partition's limit is stored as `SUCCESS` and counted in `eventconsole.consume.legacy`. Every other header-less record fails exactly as before ("event has no x-schema-id header"). A partition with no entry (for example one added later) has no legacy history, so it is strict. With no cut-over configured nothing is legacy, which is the safe default.
+
+**How it is set.** `platform-k8s/event-console/contracts/set-cutover.sh` writes the ConfigMap `event-console-cutover`, which the consumer mounts as an *optional* config file, and restarts the consumers:
+
+| Command | Cut-over |
+|---|---|
+| `./set-cutover.sh` | the topic's **current end offsets**, per partition (use this when you introduce the contract) |
+| `./set-cutover.sh --first-contract-record` | the first record in each partition that **already carries** `x-schema-id` (use this when the contract has been live for a while and you are drawing the line afterwards) |
+| `./set-cutover.sh --show` | print what is configured, change nothing |
+| `./set-cutover.sh --force …` | replace an existing cut-over |
+
+It refuses to overwrite an existing cut-over without `--force`, because moving the line *up* would excuse records that were never legacy.
+
 **Honest limits.**
 
-- **Introducing a contract breaks replaying old history.** Events published before it have no `x-schema-id`, so replaying them fails every one (observed: replaying the topic after the contract existed turned 125 pre-contract test events into `FAILED`, then `DEAD`). Decide a policy *before* replaying — backfill a header, or treat header-less records as a named legacy schema — rather than discovering it in production. (Existing documents win on replay, so already-stored events are untouched.)
+- **The cut-over has to be set before the first replay, and it trusts you about where history ends.** Records below it are excused *without being looked at* (not even "is it JSON"). Anything a bypassing producer wrote below the offset you chose is therefore accepted. `set-cutover.sh` defaults to the current end offsets, so run it when you introduce the contract, not months later. Recreating the topic resets its offsets, so delete the ConfigMap (or `--force` a new one) when you do. `--first-contract-record` cannot tell a bypass record written *before* the first contract-era record from legacy; nothing can, because both look the same.
 - **JSON Schema only, and one subject.** No Avro/Protobuf, no per-key subjects, no schema references.
 - **`aws` profile:** the client speaks the Confluent REST API. AWS Glue Schema Registry has a different API and is not supported.
 - **No authentication** on the registry (it is reachable only from the two services by NetworkPolicy), and the registry is a single replica.
+
+## Publish audit: the record is written first
+
+Every bulk publish leaves a `PublishJob` document: who asked for what, how many were acknowledged, which partitions got them. The first version wrote that document **after** the send:
+
+```text
+send 10,000 events  →  MongoDB hiccups, or the pod is killed  →  job row never written
+```
+
+The events are in Kafka and nothing anywhere says a publish happened. With MongoDB down, *every* publish succeeded and was silently unaudited. For an audit trail, that is the failure that matters.
+
+**Write-ahead.** The job is saved as `STARTED` **before** the first event is sent, and replaced by its outcome at the end:
+
+```mermaid
+sequenceDiagram
+    participant U as Sender
+    participant P as Producer
+    participant M as MongoDB (audit)
+    participant K as Kafka
+    U->>P: POST /api/publish/bulk
+    P->>P: contract check (422 if any event is bad)
+    P->>M: save job STARTED
+    alt the save fails (app.audit.required=true)
+        P-->>U: 503, NOTHING was sent: safe to retry
+    else saved
+        P->>K: send every record, await every ack
+        P->>M: replace the row with COMPLETED + counts
+        P-->>U: 200
+    end
+```
+
+| What happens | Row afterwards | The caller sees |
+|---|---|---|
+| Audit store is down **before** the send | none | `503`, nothing was published, **retry is safe** |
+| Everything works | `COMPLETED` with counts per partition | `200` |
+| The audit store fails **after** the send | stays `STARTED`, later `INTERRUPTED` | `200` with the real counts and `status: COMPLETED_UNRECORDED`; an `ERROR` log line with everything needed to rebuild the row; `eventconsole.audit.unrecorded` |
+| The producer pod dies mid-publish | stays `STARTED`; a sweep (every minute, safe with two replicas) marks it `INTERRUPTED` once it is older than `app.audit.interrupted-after` (default 10 min, longer than any publish can take) | the connection drops; the row says *this publish started and its outcome is unknown*; `eventconsole.audit.interrupted` |
+
+So **every event in Kafka has a job row that accounts for it**, and a row that is not `COMPLETED` is itself the signal that some events may exist without a recorded outcome.
+
+**Why the last write does not return an error.** The events *are* in Kafka by then. Answering `500` would invite the caller to retry, and a retry publishes the whole batch a second time. The caller gets the truth instead (`COMPLETED_UNRECORDED`, HTTP 200), and the gap is in the logs and a counter.
+
+**The trade-off you are choosing: `app.audit.required`.** The default (`true`) picks **consistency over availability**: while the audit store is down, publishing stops (`503`). Set `APP_AUDIT_REQUIRED=false` and the service keeps publishing without a record (a `WARN` per publish and `eventconsole.audit.unavailable` count it). Neither answer is free. Choose by what the audit is *for*: if someone will ask "who sent this?" and "nobody" is an unacceptable answer, keep it required.
+
+**Honest limits.**
+
+- A `STARTED`/`INTERRUPTED` row says a publish began, **not how many events made it**. That count was only ever in the process that died.
+- The records in Kafka do not carry the job id, so you cannot join an event back to its job; you match on time and topic.
+- This does not make a **client retry** safe after a timeout. If the caller never saw the answer and sends again, the batch is published twice. A real fix needs an idempotency key from the caller; it is not built.
 
 ## Running it for real: access, limits, alerts, replay
 
 **Access.** nginx requires a login for everything except the health probe. Two accounts, generated by `setup.sh` into the `event-console-auth` Secret and printed only by `platform-k8s/event-console/credentials.sh`: **viewer** (read) and **operator** (read, publish, requeue, clear). The role is decided by the HTTP method, credentials are stripped before the request is proxied, and writes are rate-limited at 5/s (burst 10) per client address. Honest limits: this is HTTP Basic over plain HTTP — put TLS in front of it before anyone you do not trust can see the traffic; the limit is per client *address*, so behind a NAT or load balancer that rewrites addresses it becomes effectively global; and the services themselves do no authentication (they are reachable only from nginx, by NetworkPolicy). A real deployment replaces Basic with OIDC at an identity-aware proxy; nothing in the services would change. `frontend/test-nginx.sh` tests all of this against the real image.
 
-**Alerts.** Both services expose `/actuator/prometheus` (every series tagged with its `application`). `platform-k8s/event-console/alerts/event-console.rules.yml` has nine alerts, each with the action to take in its description: consumer or producer down (including *disappeared*, which `up == 0` alone would miss), consumer lag, DEAD events, a FAILED backlog, dead letters not reaching Kafka, the Schema Registry unreachable, Kafka not acknowledging publishes, and the status gauges going stale because MongoDB is unreachable. The rules are unit-tested with `promtool` (`alerts/test.sh`, also a CI branch). `alerts/enable.sh` starts a small Prometheus that scrapes every pod and evaluates them, so you can watch them fire (`kubectl -n event-console port-forward svc/prometheus 9090:9090`). **Not included:** Alertmanager or any notification — routing alerts to people is deployment-specific.
+**Alerts.** Both services expose `/actuator/prometheus` (every series tagged with its `application`). `platform-k8s/event-console/alerts/event-console.rules.yml` has ten alerts, each with the action to take in its description: consumer or producer down (including *disappeared*, which `up == 0` alone would miss), consumer lag, DEAD events, a FAILED backlog, dead letters not reaching Kafka, the Schema Registry unreachable, Kafka not acknowledging publishes, a publish whose outcome was never recorded, and the status gauges going stale because MongoDB is unreachable. The rules are unit-tested with `promtool` (`alerts/test.sh`, also a CI branch). `alerts/enable.sh` starts a small Prometheus that scrapes every pod and evaluates them, so you can watch them fire (`kubectl -n event-console port-forward svc/prometheus 9090:9090`). **Not included:** Alertmanager or any notification — routing alerts to people is deployment-specific.
 
 **Replaying the dead-letter queue.** The `DEAD` documents *are* the queue; `event-console.DLT` holds a notification copy of each. So "replay" is **requeue**: `POST /api/events/{id}/requeue`, or in bulk `POST /api/events/requeue-dead?limit=1000` (the UI's *Requeue DEAD* button): oldest first, bounded at 10,000, and each event gets a fresh retry budget. The retry worker then drains them at its own pace, so one click cannot flood a downstream that has only just recovered. Re-publishing DLT records to the source topic is deliberately *not* offered: it would create a second, unrelated copy of the event (a new offset, a new `_id`) next to the `DEAD` one.
 
@@ -275,6 +354,9 @@ and 1,000 new rows in the table within a couple of seconds — five distinct key
 8. **Evolve the contract.** `SUBJECT=event-console-demo contracts/register.sh contracts/event-v1.json`, then `check-compat.sh` on the two files in `contracts/examples/`: one is compatible, one is not, and `register.sh` refuses the breaking one.
 9. **Lose a pod under load.** Publish continuously (a loop of `curl`s as *operator*) and `kubectl delete pod` one pod of each service, one at a time, with and without `--force --grace-period=0`: no request fails, and what Kafka acknowledged equals what is stored.
 10. **Lose the MongoDB primary.** `MONGO_HA=1 ./setup.sh`, then force-delete the primary pod (`rs.hello().primary` tells you which) while publishing: a new primary is elected, the services keep working, nothing is lost.
+
+11. **Replay old history with and without a cut-over.** `contracts/set-cutover.sh --show` (none), *Clear*, reset the group to earliest on a *small* topic, and watch header-less records go `FAILED`. Then `set-cutover.sh`, clear and replay again: they become `SUCCESS` (`eventconsole_consume_legacy_total` counts them), while a header-less record you add afterwards still fails. Try `set-cutover.sh` a second time: it refuses.
+12. **Lose the audit store.** `kubectl -n event-console scale deploy/mongo --replicas=0`, then publish (measured here through a `port-forward` to a producer pod): `503`, and the topic's end offsets do not move. Set `APP_AUDIT_REQUIRED=false` on the producer and repeat: it publishes, unaudited, and `eventconsole_audit_unavailable_total` counts it.
 
 ## Failure injection
 
@@ -410,6 +492,41 @@ producer -> consumer : BLOCKED        consumer -> producer : BLOCKED
 
 **New consumer group replays the topic:** deploying the consumer with a new group id rebuilt all 126,003 existing events into its fresh database with lag 0.
 
+### Replay policy and write-ahead audit — measured on the k3d cluster (images 0.5.0)
+
+**Replaying the real topic through the cut-over.** The topic holds 238,495 records. A scan with `kafka-console-consumer` (offset + headers) found the first record carrying `x-schema-id` at offsets 73,286 / 79,212 / 79,830 on partitions 0 / 1 / 2, and 2 header-less records *above* that line (partition 2, offsets 79,832 and 79,848: bypass tests from earlier). So the prediction was: 232,328 legacy records excused, nothing else header-less accepted. Then `set-cutover.sh --first-contract-record`, *Clear* in the read model, consumer group reset to `--to-earliest`, both consumers started:
+
+```text
+cut-over written:     0: 73286   1: 79212   2: 79830        (a second run refuses without --force)
+replay of 238,495:    lag 0 after 24 s
+eventconsole_consume_legacy_total  217,085 + 15,243 = 232,328     <- exactly the prediction
+read model:           SUCCESS 238,450   FAILED 45
+the 45:               2  "event has no x-schema-id header"    (the two bypass records above the cut-over)
+                      41 "schema id 1 is not registered"      (contract-era records from before I reset the registry in an earlier test; the schema now has id 2)
+                      2  "schema id 999 is not registered"    (deliberate test records)
+```
+
+No legacy record was rejected and every bypass record still was. (The 45 were then deleted from the read model, which is a test cleanup, not a feature.)
+
+**Write-ahead audit** (a producer pod addressed directly, MongoDB and Kafka real):
+
+```text
+MongoDB down BEFORE the send:   HTTP 503 "The audit store is unavailable, so nothing was published. It is safe to retry."
+                                topic end offsets 238,495 -> 238,495 (nothing sent); eventconsole_audit_unavailable_total = 1
+                                MongoDB back: the same request -> 200, 500/500 acknowledged
+the final audit write rejected  (a collection validator refusing status COMPLETED, applied as the database administrator,
+AFTER the send:                  so the first write succeeds and the second fails with a real MongoDB error):
+                                HTTP 200 {"requested":2000,"acked":2000,"status":"COMPLETED_UNRECORDED"}; the topic grew by exactly 2,000
+                                eventconsole_audit_unrecorded_total = 1
+                                ERROR log: "Publish job d8783b05-… sent 20 of 20 events (0 failed, first error: null) but its outcome
+                                could not be recorded (… Write error: WriteError{code=121, message='Document failed validation' …"
+                                the row: {"requested":2000,"acked":0,"status":"STARTED"}  ->  after the 30 s grace (set for the test): INTERRUPTED
+                                eventconsole_audit_interrupted_total = 1 (on the pod that ran the sweep)
+validator removed:              next publish -> {"requested":100,"acked":100,"status":"COMPLETED"}
+```
+
+**What this did NOT show.** The final write failing was simulated with a validator, not by a network failure or a killed process: the service's code path is the same (a `DataAccessException` after the send), but I did not observe a pod crash mid-publish. That case is covered by the unit and Testcontainers tests only. I tried to kill MongoDB inside the send window; a 50,000-event publish takes 0.2–0.8 s, and three attempts all finished first, so I used the validator instead.
+
 ## Troubleshooting
 
 | Symptom | Cause / fix |
@@ -426,7 +543,9 @@ producer -> consumer : BLOCKED        consumer -> producer : BLOCKED
 | `429` on publishing | The write rate limit (5/s, burst 10 per client address). Slow down; it clears within a second. |
 | Publishing returns `422` | An event breaks the contract; the body names the line and the field. Nothing from that request was published. |
 | Publishing returns `503` "event contract is unavailable" | The Schema Registry cannot be reached and this producer has never obtained the contract: `kubectl -n event-console get pods -l app=schema-registry`. (A producer that already has one keeps working.) |
-| Events appear as `FAILED` with "no x-schema-id header" | They were sent to Kafka by something other than the producer service (a console producer, an old client), or they are pre-contract events being replayed. |
+| Events appear as `FAILED` with "no x-schema-id header" | They were sent to Kafka by something other than the producer service (a console producer, an old client), **or** they are pre-contract history being replayed with no cut-over set: `contracts/set-cutover.sh --show`, then see *Replaying history that predates the contract*. Records below the cut-over are never failed; these are above it. |
+| Publishing returns `503` "The audit store is unavailable" | The producer's MongoDB is unreachable and `app.audit.required=true`. Nothing was sent, so retrying is safe. Fix MongoDB, or accept unaudited publishing with `APP_AUDIT_REQUIRED=false`. |
+| A publish job shows *interrupted*, or the UI warns the outcome "could not be recorded" | The producer died or lost MongoDB mid-publish. Events may be in Kafka without a recorded outcome: check `eventconsole.audit.unrecorded` and the `ERROR` log line (it carries the counts), and compare the topic's end offsets before and after. |
 | `schema-registry` pod: `CreateContainerConfigError … non-numeric user` | The manifest must give the pod a numeric `runAsUser` (it does: 1000); you edited it out. |
 | After `MONGO_HA=1` (or back) the table is empty | Switching modes starts with an empty database; the other mode's data is untouched. Rebuild by resetting the consumer group to the earliest offset (Experiment 3). |
 | `setup.sh` fails at the contract step with HTTP 409 | `event-v1.json` is not compatible with the version already registered. Run `contracts/check-compat.sh contracts/event-v1.json` to see why; an unreleased draft can be removed with `DELETE /subjects/event-console-value` (twice, the second with `?permanent=true`). |
@@ -444,14 +563,14 @@ platform-k8s/event-console/cleanup.sh --wipe   # deletes the namespace: data AND
 | Done (and verified, see above) | Not done — what a real deployment adds |
 |---|---|
 | Two independently deployable services with their own data and credentials | **Separate MongoDB clusters** if the services need isolation of resources and blast radius, not only of data. Today both databases live on one server (or one replica set). |
-| An explicit event contract in a Schema Registry: refused at the edge, enforced again by the consumer, compatibility-checked on change | **A wire format other tools can decode** (the Confluent magic byte), **Avro/Protobuf**, schema references, and a **header-less policy** for replaying history from before the contract. The registry is a single unauthenticated replica. |
+| An explicit event contract in a Schema Registry: refused at the edge, enforced again by the consumer, compatibility-checked on change | **A wire format other tools can decode** (the Confluent magic byte), **Avro/Protobuf**, schema references, and a cut-over that is **maintained** (it is a hand-run script writing a ConfigMap, not part of a release process). The registry is a single unauthenticated replica. |
 | Idempotent, batch, outage-aware consumer; failures stored as status, retried with backoff, then DEAD + DLT; bulk requeue | **Exactly-once effects.** Processing and the dead-letter topic are at-least-once; processors must be idempotent. |
 | A login with two roles, per-method authorisation, credentials stripped before proxying, rate-limited writes (tested against the real image) | **TLS** (this is Basic over plain HTTP), **OIDC** at an identity-aware proxy, per-user (not per-address) limits, and authentication *between* services. |
 | Nine alert rules, unit-tested with `promtool`, and a Prometheus that evaluates them on real metrics | **Alertmanager and routing** to people; **consumer-group lag from the broker's point of view** (`kafka-exporter`) rather than only the consumer's own gauge; dashboards. |
 | Two replicas of every service, safe rollouts, disruption budgets, a spread constraint; an opt-in 3-member MongoDB replica set whose primary was killed under load | **More than one node.** On the one-node cluster a node failure still takes everything down. Kafka is one broker; the registry is one pod. Replica-set **election time was not measured**. |
 | A real Jenkins ran the pipeline for lab-02b (144 tests recorded, green) | The other 16 labs, the k3d deploy stage, agents with real credentials, a multibranch job. |
 | Non-root, read-only FS where the image allows, NetworkPolicies, per-service Secrets | **Secrets in a secret manager, with rotation.** Kafka here is PLAINTEXT (see lab-17 for SASL_SSL). |
-| Validated inputs, size caps, no free-form topic | **Async jobs** (202 + job id) for batches much larger than the 50,000-event synchronous publish; the producer's audit record is saved *after* the publish, so a MongoDB failure at that instant loses the audit row, not the events. |
+| Validated inputs, size caps, no free-form topic | **Async jobs** (202 + job id) for batches much larger than the 50,000-event synchronous publish; **an idempotency key**, so a client that retries after a timeout does not publish twice (the audit record is now written *before* the send, so a lost audit write can no longer hide a publish, but it cannot make a retry safe). |
 | Topic auto-created at startup | **Topic provisioning as code** (partition count and replication are capacity decisions, not app startup side effects). |
 
 ## Principal Engineer questions
@@ -471,7 +590,9 @@ platform-k8s/event-console/cleanup.sh --wipe   # deletes the namespace: data AND
 13. The producer refuses a whole request if one event is bad, and the consumer re-checks anyway. Why both? What would you lose by keeping only the edge check — and what would you lose by keeping only the consumer's?
 14. The contract is closed (`additionalProperties: false`) and the rule is BACKWARD. Walk through adding an optional field in production: which service is upgraded first, and what breaks if it is the other one?
 15. The consumer validates each event against the schema id *it names*, not the latest. What does that make possible during a registry outage, and what attack or mistake does it open (an event naming an old, looser schema)?
-16. You introduced the contract after a million events already existed. What happens when someone replays the topic, and what are your options (backfill headers, a named legacy schema, a cut-over offset)? Which would you choose and why?
+16. You introduced the contract after a million events already existed. What happens when someone replays the topic, and what are your options (backfill headers, a named legacy schema, a cut-over offset)? Which would you choose and why? (Hint: which of those can a producer that bypasses your service forge?)
+17. The audit row used to be written after the send. Name two ways that loses a publish from the audit trail. Writing it first creates a new failure; what is it, and what does the caller see in each case?
+18. `app.audit.required=true` stops publishing when the audit store is down. Argue for `false`, then against. What would you have to know about the business to decide?
 17. A client's address is the rate-limit key, and the cluster's load balancer rewrites every address to one. What did you actually build, and what is the minimum change that gives each *user* a limit?
 18. Both consumer replicas run a retry worker and report the same status gauges. Which alert expressions need `max` rather than `sum`, and what goes wrong if you pick the wrong one?
 19. The MongoDB replica set survived losing a primary on a one-node cluster. What does that test prove, and what does it not?
