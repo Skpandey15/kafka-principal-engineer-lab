@@ -28,12 +28,16 @@ import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.index.IndexInfo;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.web.client.RestClient;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.kafka.KafkaContainer;
 import org.testcontainers.mongodb.MongoDBContainer;
+import com.kafkalab.eventconsole.producer.contract.ContractUnavailableException;
+import com.kafkalab.eventconsole.producer.contract.EventContract;
 import com.kafkalab.eventconsole.producer.model.PublishJob;
+import com.kafkalab.eventconsole.producer.testsupport.FakeSchemaRegistry;
 
 /**
  * The producer service against a real broker and a real MongoDB. Note what is NOT here: no
@@ -48,6 +52,9 @@ class ProducerIntegrationTest {
 
     private static final String TOPIC = "producer-test";
 
+    /** The contract registry, over real HTTP: schema id 7 is the latest version (3) of the subject. */
+    static final FakeSchemaRegistry REGISTRY = new FakeSchemaRegistry(7, 3, FakeSchemaRegistry.V1);
+
     @Container
     static final KafkaContainer KAFKA = new KafkaContainer("apache/kafka:4.3.1");
 
@@ -59,6 +66,7 @@ class ProducerIntegrationTest {
         registry.add("spring.kafka.bootstrap-servers", KAFKA::getBootstrapServers);
         registry.add("spring.mongodb.uri", () -> MONGO.getReplicaSetUrl("eventconsole_producer"));
         registry.add("app.topic", () -> TOPIC);
+        registry.add("app.schema.registry-url", REGISTRY::url);
     }
 
     @LocalServerPort
@@ -66,6 +74,9 @@ class ProducerIntegrationTest {
 
     @Autowired
     MongoTemplate mongo;
+
+    @MockitoSpyBean
+    EventContract contract;
 
     private RestClient http() {
         return RestClient.create("http://localhost:" + port);
@@ -78,6 +89,22 @@ class ProducerIntegrationTest {
 
     private int statusOf(Map<String, Object> body) {
         return http().post().uri("/api/publish/bulk").body(body).exchange((req, res) -> res.getStatusCode()).value();
+    }
+
+    /**
+     * How many records the topic holds, from the broker's end offsets. Exact and immediate -- unlike
+     * polling, which can return "nothing" simply because the consumer has not been assigned yet.
+     */
+    private long topicSize() {
+        Properties props = new Properties();
+        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers());
+        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+        try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props)) {
+            var partitions = consumer.partitionsFor(TOPIC).stream()
+                    .map(p -> new org.apache.kafka.common.TopicPartition(TOPIC, p.partition())).toList();
+            return consumer.endOffsets(partitions).values().stream().mapToLong(Long::longValue).sum();
+        }
     }
 
     /** Reads the whole topic from the beginning with a brand-new consumer group. */
@@ -142,23 +169,95 @@ class ProducerIntegrationTest {
     @Test
     void pastedEventsAreWrittenVerbatimIncludingAKeylessOne() {
         post(Map.of("mode", "PASTE", "events", List.of(
-                Map.of("key", "inv-1", "value", "{\"sku\":\"A-100\"}"),
-                Map.of("key", "inv-2", "value", "{\"sku\":\"B-200\"}"),
-                Map.of("value", "keyless-event-marker"))));
+                Map.of("key", "inv-1", "value", "{\"id\":\"i1\",\"batch\":\"A-100\"}"),
+                Map.of("key", "inv-2", "value", "{\"id\":\"i2\",\"batch\":\"B-200\"}"),
+                Map.of("value", "{\"id\":\"keyless-event-marker\"}"))));
 
         List<ConsumerRecord<String, String>> onTopic = readTopic(3);
         assertThat(onTopic).anySatisfy(r -> {
             assertThat(r.key()).isEqualTo("inv-1");
-            assertThat(r.value()).isEqualTo("{\"sku\":\"A-100\"}");
+            assertThat(r.value()).isEqualTo("{\"id\":\"i1\",\"batch\":\"A-100\"}");
         });
         assertThat(onTopic).anySatisfy(r -> {
             assertThat(r.key()).isEqualTo("inv-2");
-            assertThat(r.value()).isEqualTo("{\"sku\":\"B-200\"}");
+            assertThat(r.value()).isEqualTo("{\"id\":\"i2\",\"batch\":\"B-200\"}");
         });
         assertThat(onTopic).anySatisfy(r -> {
             assertThat(r.key()).isNull();
-            assertThat(r.value()).isEqualTo("keyless-event-marker");
+            assertThat(r.value()).isEqualTo("{\"id\":\"keyless-event-marker\"}");
         });
+    }
+
+    @Test
+    void everyRecordOnTheTopicCarriesTheSchemaIdItWasCheckedAgainstAndTheAuditSaysWhich() {
+        Map<String, Object> job = post(Map.of("mode", "GENERATE", "count", 20, "keyStrategy", "UNIQUE", "keyPrefix", "hdr-"));
+
+        List<ConsumerRecord<String, String>> mine = readTopic(20).stream()
+                .filter(r -> r.key() != null && r.key().startsWith("hdr-")).toList();
+        assertThat(mine).hasSize(20).allSatisfy(r ->
+                assertThat(new String(r.headers().lastHeader("x-schema-id").value())).isEqualTo("7"));
+        assertThat(job).containsEntry("schemaId", 7).containsEntry("schemaVersion", 3);
+    }
+
+    @Test
+    void oneEventThatBreaksTheContractGetsTheWholeRequestRejectedWith422AndNothingIsPublished() {
+        long before = topicSize();
+
+        Map<String, Object> rejection = http().post().uri("/api/publish/bulk").body(Map.of("mode", "PASTE", "events", List.of(
+                        Map.of("key", "good-1", "value", "{\"id\":\"g1\"}"),
+                        Map.of("key", "bad-1", "value", "{\"seq\":-3}"),
+                        Map.of("key", "bad-2", "value", "plain text"))))
+                .exchange((req, res) -> {
+                    assertThat(res.getStatusCode().value()).isEqualTo(422);
+                    return res.bodyTo(new ParameterizedTypeReference<Map<String, Object>>() {
+                    });
+                });
+
+        assertThat((String) rejection.get("error")).contains("2 event(s)").contains("nothing was published");
+        assertThat(rejection).containsEntry("total", 2);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> violations = (List<Map<String, Object>>) rejection.get("violations");
+        assertThat(violations).extracting(v -> v.get("index")).containsExactly(1, 2);
+        assertThat(violations.get(0)).containsEntry("key", "bad-1");
+        assertThat((String) violations.get(0).get("reason")).contains("id");
+        assertThat((String) violations.get(1).get("reason")).startsWith("value is not valid JSON");
+
+        // Not even the good event went out.
+        assertThat(topicSize()).isEqualTo(before);
+    }
+
+    @Test
+    void whenNoContractIsAvailableThePublishIsRefusedWith503AndNothingGoesOut() {
+        long before = topicSize();
+        org.mockito.Mockito.doThrow(new ContractUnavailableException("registry down")).when(contract).current();
+
+        int status = statusOf(Map.of("mode", "GENERATE", "count", 5));
+
+        assertThat(status).isEqualTo(503);
+        assertThat(topicSize()).isEqualTo(before);
+    }
+
+    @Test
+    void thePrometheusEndpointExposesThePublishAndContractCounters() {
+        post(Map.of("mode", "GENERATE", "count", 3, "keyStrategy", "NONE"));
+        statusOf(Map.of("mode", "PASTE", "events", List.of(Map.of("value", "not json"))));
+
+        String body = http().get().uri("/actuator/prometheus").retrieve().body(String.class);
+
+        assertThat(body).containsPattern("eventconsole_publish_acked_total\\{[^}]*\\} [0-9.]+")
+                .containsPattern("eventconsole_publish_rejected_total\\{[^}]*\\} [1-9][0-9.]*")
+                .contains("application=\"event-console-producer\"");
+    }
+
+    @Test
+    void theConfigEndpointShowsWhichContractIsInForce() {
+        Map<String, Object> config = http().get().uri("/api/config").retrieve().body(new ParameterizedTypeReference<>() {
+        });
+        @SuppressWarnings("unchecked")
+        Map<String, Object> schema = (Map<String, Object>) config.get("contract");
+        assertThat(schema).containsEntry("subject", "event-console-value").containsEntry("available", true)
+                .containsEntry("version", 3).containsEntry("schemaId", 7);
+        assertThat(config).doesNotContainKey("registryUrl");
     }
 
     @Test

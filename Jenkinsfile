@@ -55,6 +55,20 @@ def connectPluginLabs = [
     'lab-11-transactional-outbox',
 ]
 
+// Applies the LABS parameter: keeps only the requested labs; an empty parameter keeps all.
+def selected(List labs, String requested) {
+    if (!requested?.trim()) {
+        return labs
+    }
+    def wanted = requested.split(',').collect { it.trim() }.findAll { it }
+    return labs.findAll { wanted.contains(it) }
+}
+
+// True if the LABS parameter is empty (run everything) or names this branch.
+def wants(String name, String requested) {
+    return !requested?.trim() || requested.split(',').collect { it.trim() }.contains(name)
+}
+
 // `lab` is a path relative to labs/ -- a lab folder, or a service inside one
 // (lab-02b has two independent Gradle projects: producer/ and consumer/).
 def runGradleTest(String lab) {
@@ -131,6 +145,15 @@ pipeline {
     }
 
     parameters {
+        // Empty = everything. A comma-separated list narrows the Gradle lab suites to those labs,
+        // e.g. `lab-02b-spring-boot-event-console/producer,lab-02b-spring-boot-event-console/consumer`,
+        // and skips the platform-dependent branches (15, 17) and the connect-plugin fetch unless they
+        // are named. It lets a small Jenkins (or a laptop) run exactly the part that changed.
+        string(
+            name: 'LABS',
+            defaultValue: '',
+            description: 'Comma-separated lab paths (relative to labs/) to run; empty runs all of them.'
+        )
         // Off by default: this stage deploys 9 environments sequentially onto
         // a real k3d cluster (real JVM Kafka brokers each time) and can take
         // 30-45+ minutes, versus a few minutes for the Testcontainers-based
@@ -146,6 +169,8 @@ pipeline {
 
     stages {
         stage('Fetch Kafka Connect plugins') {
+            // Only needed by labs 10 and 11: skip the download when LABS excludes both.
+            when { expression { return selected(connectPluginLabs, params.LABS) } }
             agent { label 'docker' }
             steps {
                 sh 'bash platform/kafka-connect/fetch-plugins.sh'
@@ -158,7 +183,7 @@ pipeline {
                 script {
                     def branches = [:]
 
-                    selfContainedLabs.each { lab ->
+                    selected(selfContainedLabs, params.LABS).each { lab ->
                         branches[lab] = {
                             node('docker') {
                                 checkout scm
@@ -167,7 +192,7 @@ pipeline {
                         }
                     }
 
-                    connectPluginLabs.each { lab ->
+                    selected(connectPluginLabs, params.LABS).each { lab ->
                         branches[lab] = {
                             node('docker') {
                                 checkout scm
@@ -181,14 +206,30 @@ pipeline {
                     // This proves the UI still installs from its lockfile and builds. Runs
                     // in a throwaway node container as the agent's own user, so nothing in
                     // the workspace ends up root-owned.
-                    branches['lab-02b-frontend-build'] = {
-                        node('docker') {
-                            checkout scm
-                            sh '''
-                                docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
-                                  -v "$PWD/labs/lab-02b-spring-boot-event-console/frontend:/app" -w /app \
-                                  node:22-alpine sh -c "npm ci --no-audit --no-fund && npm run build"
-                            '''
+                    if (wants('lab-02b-spring-boot-event-console/frontend', params.LABS)) {
+                        branches['lab-02b-frontend-build'] = {
+                            node('docker') {
+                                checkout scm
+                                sh '''
+                                    docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+                                      -v "$PWD/labs/lab-02b-spring-boot-event-console/frontend:/app" -w /app \
+                                      node:22-alpine sh -c "npm ci --no-audit --no-fund && npm run build"
+                                '''
+                                // The edge is code too: login, roles, header stripping and rate limits, checked
+                                // against the real image (needs only Docker).
+                                sh 'bash labs/lab-02b-spring-boot-event-console/frontend/test-nginx.sh'
+                            }
+                        }
+                    }
+
+                    // The Event Console's alert rules are code: validate them and run their unit tests
+                    // (promtool, from the Prometheus image) so a typo cannot ship a silent alert.
+                    if (wants('event-console-alert-rules', params.LABS)) {
+                        branches['event-console-alert-rules'] = {
+                            node('docker') {
+                                checkout scm
+                                sh 'bash platform-k8s/event-console/alerts/test.sh'
+                            }
                         }
                     }
 
@@ -196,21 +237,23 @@ pipeline {
                     // reason lab-17 documents ("Why not Testcontainers here"):
                     // observability needs a real, persistent JMX-exporting broker
                     // fleet plus Prometheus actually scraping it over time.
-                    branches['lab-15-observability'] = {
-                        node('docker') {
-                            checkout scm
-                            try {
-                                sh '''
-                                    cd platform/kafka-cluster && docker compose up -d
-                                    cd ../observability && docker compose up -d
-                                '''
-                                sh 'sleep 30' // brokers + exporter + first Prometheus scrape need to warm up
-                                runGradleTest('lab-15-observability')
-                            } finally {
-                                sh '''
-                                    cd platform/observability && docker compose down -v || true
-                                    cd ../kafka-cluster && docker compose down -v || true
-                                '''
+                    if (wants('lab-15-observability', params.LABS)) {
+                        branches['lab-15-observability'] = {
+                            node('docker') {
+                                checkout scm
+                                try {
+                                    sh '''
+                                        cd platform/kafka-cluster && docker compose up -d
+                                        cd ../observability && docker compose up -d
+                                    '''
+                                    sh 'sleep 30' // brokers + exporter + first Prometheus scrape need to warm up
+                                    runGradleTest('lab-15-observability')
+                                } finally {
+                                    sh '''
+                                        cd platform/observability && docker compose down -v || true
+                                        cd ../kafka-cluster && docker compose down -v || true
+                                    '''
+                                }
                             }
                         }
                     }
@@ -218,23 +261,28 @@ pipeline {
                     // Not self-contained either -- a real self-signed CA, a
                     // CA-signed broker cert, and SCRAM users bootstrapped at
                     // storage-format time, per lab-17's own README.
-                    branches['lab-17-security'] = {
-                        node('docker') {
-                            checkout scm
-                            try {
-                                sh '''
-                                    cd platform/kafka-security
-                                    bash certs/generate-certs.sh
-                                    docker compose up -d
-                                '''
-                                sh 'sleep 20' // broker + SCRAM/ACL bootstrap needs to finish
-                                runGradleTest('lab-17-security')
-                            } finally {
-                                sh 'cd platform/kafka-security && docker compose down -v || true'
+                    if (wants('lab-17-security', params.LABS)) {
+                        branches['lab-17-security'] = {
+                            node('docker') {
+                                checkout scm
+                                try {
+                                    sh '''
+                                        cd platform/kafka-security
+                                        bash certs/generate-certs.sh
+                                        docker compose up -d
+                                    '''
+                                    sh 'sleep 20' // broker + SCRAM/ACL bootstrap needs to finish
+                                    runGradleTest('lab-17-security')
+                                } finally {
+                                    sh 'cd platform/kafka-security && docker compose down -v || true'
+                                }
                             }
                         }
                     }
 
+                    if (!branches) {
+                        error "LABS='${params.LABS}' matches nothing. Valid names are the lab paths listed at the top of this Jenkinsfile."
+                    }
                     parallel branches
                 }
             }

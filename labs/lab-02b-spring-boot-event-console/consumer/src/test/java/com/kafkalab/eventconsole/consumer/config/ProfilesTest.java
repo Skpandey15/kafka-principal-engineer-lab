@@ -104,11 +104,23 @@ class ProfilesTest {
                         .hasMessageContaining("aws")
                         .hasMessageContaining("MONGODB_URI")
                         .hasMessageContaining("KAFKA_SASL_JAAS_CONFIG")
+                        .hasMessageContaining("SCHEMA_REGISTRY_URL")
                         .satisfies(e -> assertThat(e.getMessage()).doesNotContain("KAFKA_BOOTSTRAP")));
 
         runner.withPropertyValues("spring.profiles.active=k3d").run(ctx ->
                 assertThatThrownBy(() -> StartupConfigValidator.validate((ConfigurableEnvironment) ctx.getEnvironment()))
                         .hasMessageContaining("MONGODB_URI"));
+    }
+
+    @Test
+    void eachProfileSaysWhereTheEventContractLives() {
+        runner.run(ctx -> assertThat(ctx.getBean(AppProperties.class).schema().registryUrl()).isEqualTo("http://localhost:8081"));
+        runner.withPropertyValues("spring.profiles.active=k3d", "MONGODB_URI=mongodb://x/y").run(ctx ->
+                assertThat(ctx.getBean(AppProperties.class).schema().registryUrl())
+                        .isEqualTo("http://schema-registry.event-console.svc.cluster.local:8081"));
+        runner.withPropertyValues("spring.profiles.active=aws", "SCHEMA_REGISTRY_URL=https://registry.example.com", "MONGODB_URI=mongodb://x/y",
+                "KAFKA_BOOTSTRAP=b:1", "KAFKA_SASL_JAAS_CONFIG=x").run(ctx ->
+                assertThat(ctx.getBean(AppProperties.class).schema().registryUrl()).isEqualTo("https://registry.example.com"));
     }
 
     @Test

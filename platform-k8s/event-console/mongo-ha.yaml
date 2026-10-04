@@ -1,0 +1,252 @@
+# MongoDB as a three-member replica set (opt-in): MONGO_HA=1 ./setup.sh
+#
+# Replaces mongo-single.yaml. Three members, one PersistentVolumeClaim each, so losing one member
+# (a pod, a node, a restart) neither stops writes nor loses an acknowledged one: a new primary is
+# elected from the remaining two, and the services' connection string (w=majority) only treats a
+# write as done once two members have it.
+#
+# Cost: roughly 3 x 300 MiB instead of 1 x 300 MiB. On a laptop cluster that is real memory, which is
+# why this is opt-in. Switching modes starts with an EMPTY database (the data of the other mode is
+# not migrated): the read model is rebuilt by replaying the topic (see the README).
+#
+# What this does NOT give you: members all run on whatever nodes the cluster has. On the one-node k3d
+# cluster they share a node, so a NODE failure still takes all three down -- the topology spread
+# constraint only helps on a multi-node cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo-hs
+  namespace: event-console
+spec:
+  # Headless: gives every member a stable DNS name (mongo-0.mongo-hs...), which is what the replica
+  # set configuration and the drivers use to find each other. Members must resolve before they are
+  # Ready, hence publishNotReadyAddresses.
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector: { app: mongo }
+  ports: [{ port: 27017, targetPort: 27017 }]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo
+  namespace: event-console
+spec:
+  # Same name as in single mode, so the ingress and tools keep working. It reaches ANY member, so a
+  # client using it must connect directly to what it needs; the services use the replica-set URI.
+  selector: { app: mongo }
+  ports: [{ port: 27017, targetPort: 27017 }]
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: mongo
+  namespace: event-console
+spec:
+  # A voluntary disruption (node drain, rollout) may take at most one member: two must stay to keep a majority.
+  minAvailable: 2
+  selector: { matchLabels: { app: mongo } }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongo
+  namespace: event-console
+  labels: { app: mongo }
+spec:
+  replicas: 3
+  serviceName: mongo-hs
+  # Bring all three up together; the replica set is formed afterwards by mongo-rs-init.
+  podManagementPolicy: Parallel
+  selector: { matchLabels: { app: mongo } }
+  template:
+    metadata: { labels: { app: mongo } }
+    spec:
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile: { type: RuntimeDefault }
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app: mongo } }
+      initContainers:
+        # mongod refuses a key file that is group- or world-readable, and a mounted Secret is exactly that
+        # once fsGroup is set. Copy it to a private location with mode 0400 owned by the mongod user.
+        - name: keyfile
+          image: mongo:7.0
+          command: ["sh", "-c", "cp /secret/keyfile /keyfile/keyfile && chmod 400 /keyfile/keyfile"]
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { memory: 64Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: keyfile-secret, mountPath: /secret, readOnly: true }
+            - { name: keyfile, mountPath: /keyfile }
+      containers:
+        - name: mongo
+          image: mongo:7.0
+          # --keyFile is what lets the members authenticate to each other (and turns auth on);
+          # --replSet makes them a set. The image creates the root user on each member's first start.
+          args: ["--replSet", "rs0", "--keyFile", "/keyfile/keyfile", "--bind_ip_all", "--wiredTigerCacheSizeGB", "0.25"]
+          env:
+            - { name: MONGO_INITDB_ROOT_USERNAME, value: root }
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom: { secretKeyRef: { name: event-console-mongo, key: MONGO_PASSWORD } }
+          ports: [{ containerPort: 27017 }]
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: data, mountPath: /data/db }
+            - { name: keyfile, mountPath: /keyfile, readOnly: true }
+          readinessProbe:
+            exec: { command: ["mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"] }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec: { command: ["mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"] }
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+      volumes:
+        - name: keyfile-secret
+          secret: { secretName: mongo-keyfile }
+        - name: keyfile
+          emptyDir: { medium: Memory, sizeLimit: 1Mi }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources: { requests: { storage: 1Gi } }
+---
+# Forms the replica set once (idempotent: a set that already exists is left alone), then waits until
+# a primary has been elected. The users Job below must not start before that.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mongo-rs-init
+  namespace: event-console
+spec:
+  backoffLimit: 12
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata: { labels: { app: mongo-rs-init } }
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: rs-init
+          image: mongo:7.0
+          env:
+            - { name: HOME, value: /tmp }
+            - name: ROOT_PASSWORD
+              valueFrom: { secretKeyRef: { name: event-console-mongo, key: MONGO_PASSWORD } }
+          command:
+            - sh
+            - -c
+            - |
+              exec mongosh --host mongo-0.mongo-hs.event-console.svc.cluster.local --quiet \
+                -u root -p "$ROOT_PASSWORD" --authenticationDatabase admin --eval '
+                const host = (i) => "mongo-" + i + ".mongo-hs.event-console.svc.cluster.local:27017";
+                let initiated = false;
+                try { rs.status(); initiated = true; } catch (e) { /* not initiated yet */ }
+                if (!initiated) {
+                  print("initiating replica set rs0");
+                  printjson(rs.initiate({ _id: "rs0", members: [0, 1, 2].map((i) => ({ _id: i, host: host(i) })) }));
+                } else {
+                  print("replica set rs0 already exists");
+                }
+                // Wait for an election, so that whatever runs next finds a primary.
+                for (let i = 0; i < 60; i++) {
+                  if (db.hello().isWritablePrimary || db.hello().primary) { print("primary: " + db.hello().primary); quit(0); }
+                  sleep(2000);
+                }
+                print("no primary elected in time"); quit(1);
+              '
+          resources:
+            requests: { cpu: 10m, memory: 64Mi }
+            limits: { memory: 192Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: { sizeLimit: 32Mi } }
+---
+# Same job as in single mode (one least-privilege user per service), but it connects to the replica
+# set and waits for the PRIMARY, because users can only be written there.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mongo-users
+  namespace: event-console
+spec:
+  backoffLimit: 12
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata: { labels: { app: mongo-users } }
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: create-users
+          image: mongo:7.0
+          env:
+            - { name: HOME, value: /tmp }
+            - name: ROOT_PASSWORD
+              valueFrom: { secretKeyRef: { name: event-console-mongo, key: MONGO_PASSWORD } }
+            - name: PRODUCER_PASSWORD
+              valueFrom: { secretKeyRef: { name: producer-mongo, key: PASSWORD } }
+            - name: CONSUMER_PASSWORD
+              valueFrom: { secretKeyRef: { name: consumer-mongo, key: PASSWORD } }
+          command:
+            - sh
+            - -c
+            - |
+              exec mongosh --host "rs0/mongo-0.mongo-hs.event-console.svc.cluster.local:27017,mongo-1.mongo-hs.event-console.svc.cluster.local:27017,mongo-2.mongo-hs.event-console.svc.cluster.local:27017" \
+                --quiet -u root -p "$ROOT_PASSWORD" --authenticationDatabase admin --eval '
+                const ensureUser = (dbName, user, pwd) => {
+                  const d = db.getSiblingDB(dbName);
+                  const roles = [{ role: "readWrite", db: dbName }];
+                  if (d.getUser(user)) { d.updateUser(user, { pwd: pwd, roles: roles }); print("updated " + user + " on " + dbName); }
+                  else { d.createUser({ user: user, pwd: pwd, roles: roles }); print("created " + user + " on " + dbName); }
+                };
+                ensureUser("eventconsole_producer", "producer", process.env.PRODUCER_PASSWORD);
+                ensureUser("eventconsole_consumer", "consumer", process.env.CONSUMER_PASSWORD);
+              '
+          resources:
+            requests: { cpu: 10m, memory: 64Mi }
+            limits: { memory: 192Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: { sizeLimit: 32Mi } }

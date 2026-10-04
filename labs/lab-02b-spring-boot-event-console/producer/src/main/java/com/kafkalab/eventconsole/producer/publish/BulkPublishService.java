@@ -1,5 +1,6 @@
 package com.kafkalab.eventconsole.producer.publish;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -8,12 +9,17 @@ import java.util.TreeMap;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
+import org.apache.kafka.common.header.internals.RecordHeader;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.SendResult;
 import org.springframework.stereotype.Service;
 import io.micrometer.core.instrument.MeterRegistry;
 import com.kafkalab.eventconsole.producer.config.AppProperties;
+import com.kafkalab.eventconsole.producer.contract.ContractUnavailableException;
+import com.kafkalab.eventconsole.producer.contract.ContractViolationException;
+import com.kafkalab.eventconsole.producer.contract.EventContract;
 import com.kafkalab.eventconsole.producer.model.PublishJob;
 import com.kafkalab.eventconsole.producer.publish.BulkPublishRequest.KeyStrategy;
 import com.kafkalab.eventconsole.producer.publish.BulkPublishRequest.Mode;
@@ -22,6 +28,9 @@ import com.kafkalab.eventconsole.producer.repo.PublishJobRepository;
 @Service
 public class BulkPublishService {
 
+    /** Kafka header naming the Schema Registry id of the contract the event was checked against. */
+    public static final String SCHEMA_ID_HEADER = "x-schema-id";
+
     private record Outgoing(String key, String value) {
     }
 
@@ -29,18 +38,37 @@ public class BulkPublishService {
     private final PublishJobRepository jobs;
     private final AppProperties props;
     private final MeterRegistry metrics;
+    private final EventContract contract;
 
-    public BulkPublishService(KafkaTemplate<String, String> kafka, PublishJobRepository jobs, AppProperties props,
+    public BulkPublishService(KafkaTemplate<String, String> kafka, PublishJobRepository jobs, AppProperties props, EventContract contract,
             MeterRegistry metrics) {
         this.kafka = kafka;
         this.jobs = jobs;
         this.props = props;
         this.metrics = metrics;
+        this.contract = contract;
     }
 
     public PublishJob publish(BulkPublishRequest req) {
         String topic = props.topic();
         List<Outgoing> batch = buildBatch(req);
+
+        // The contract is enforced at the edge, before anything is sent: a bad event is cheapest to
+        // stop here, and this is the only place its sender can still be told what is wrong. All or
+        // nothing -- a request with one bad event publishes none, so nobody has to work out what got through.
+        EventContract.Current schema;
+        try {
+            schema = contract.current();
+            contract.requireAllValid(schema, batch.stream().map(Outgoing::key).toList(),
+                    batch.stream().map(Outgoing::value).toList());
+        } catch (ContractViolationException rejected) {
+            metrics.counter("eventconsole.publish.rejected").increment(rejected.total());
+            throw rejected;
+        } catch (ContractUnavailableException unavailable) {
+            metrics.counter("eventconsole.contract.unavailable").increment();
+            throw unavailable;
+        }
+        byte[] schemaId = String.valueOf(schema.id()).getBytes(StandardCharsets.UTF_8);
         long started = System.nanoTime();
 
         // send() only enqueues the record in the producer's buffer; the returned
@@ -48,7 +76,9 @@ public class BulkPublishService {
         // So: fire every send first, THEN wait for every future.
         List<CompletableFuture<SendResult<String, String>>> futures = new ArrayList<>(batch.size());
         for (Outgoing o : batch) {
-            futures.add(kafka.send(topic, o.key(), o.value()));
+            // The header tells every consumer which version of the contract this event was checked against.
+            futures.add(kafka.send(new ProducerRecord<>(topic, null, o.key(), o.value(),
+                    List.of(new RecordHeader(SCHEMA_ID_HEADER, schemaId)))));
         }
 
         Map<String, Long> perPartition = new TreeMap<>(java.util.Comparator.comparingInt(Integer::parseInt));
@@ -84,6 +114,8 @@ public class BulkPublishService {
                 acked,
                 failed,
                 (System.nanoTime() - started) / 1_000_000,
+                schema.id(),
+                schema.version(),
                 perPartition,
                 firstError);
         return jobs.save(job);

@@ -1,0 +1,16 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "EventConsoleEvent",
+  "description": "EXAMPLE of a COMPATIBLE change: adds an OPTIONAL property to the closed model. Data written under v1 is still valid under this version, so the registry accepts it under BACKWARD.",
+  "type": "object",
+  "required": ["id"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "seq": { "type": "integer", "minimum": 0 },
+    "batch": { "type": "string" },
+    "ts": { "type": "string" },
+    "status": { "type": "string" },
+    "customerId": { "type": "string" }
+  }
+}

@@ -19,11 +19,25 @@ public record AppProperties(
         @Min(1) long consumerBackoffInitialMs,
         @Min(1) long consumerBackoffMaxMs,
         @NotNull Duration eventsTtl,
-        @Valid @NotNull Retry retry) {
+        @Valid @NotNull Retry retry,
+        @Valid @NotNull Schema schema) {
 
     /** Events that exhaust their retries are published here, never silently dropped. */
     public String deadLetterTopic() {
         return topic + ".DLT";
+    }
+
+    /**
+     * The event contract: where the Schema Registry is. Schemas are read by id; the service never registers any.
+     *
+     * @param registryUrl      base URL of a Confluent-compatible Schema Registry
+     * @param connectTimeoutMs how long to wait to connect before treating the registry as unavailable
+     * @param readTimeoutMs    how long to wait for an answer
+     */
+    public record Schema(
+            @NotBlank String registryUrl,
+            @Min(1) long connectTimeoutMs,
+            @Min(1) long readTimeoutMs) {
     }
 
     /**

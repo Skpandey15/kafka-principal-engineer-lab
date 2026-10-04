@@ -36,6 +36,7 @@ public class EventStoreSetup implements InitializingBean {
     public static final String TTL_INDEX = "ttl_success_consumedAt";
     /** The pre-status index: it expired every document regardless of status, so it must go. */
     public static final String LEGACY_TTL_INDEX = "ttl_consumedAt";
+    private static final int MIGRATION_CHUNK = 5_000;
 
     private final MongoTemplate mongo;
     private final AppProperties props;
@@ -85,8 +86,22 @@ public class EventStoreSetup implements InitializingBean {
      * partial TTL index would never expire them. Back-fill the field once; later runs match nothing.
      */
     public long migrateLegacyEvents() {
-        long migrated = mongo.updateMulti(Query.query(Criteria.where("status").exists(false)),
-                new Update().set("status", EventStatus.SUCCESS.name()), EventDocument.class).getModifiedCount();
+        // In bounded chunks, not one update over the whole collection: a single updateMulti over hundreds of
+        // thousands of documents pushes MongoDB's cache and journal hard enough to get a small container
+        // OOM-killed (seen on the 232,000-event lab database), and a killed back-fill just starts over.
+        long migrated = 0;
+        String collection = mongo.getCollectionName(EventDocument.class);
+        while (true) {
+            Query chunk = Query.query(Criteria.where("status").exists(false)).limit(MIGRATION_CHUNK);
+            chunk.fields().include("_id");
+            // Raw documents: only _id is fetched, and the entity (which has primitive fields) cannot be built from that.
+            List<Object> ids = mongo.find(chunk, Document.class, collection).stream().<Object>map(d -> d.get("_id")).toList();
+            if (ids.isEmpty()) {
+                break;
+            }
+            migrated += mongo.updateMulti(Query.query(Criteria.where("_id").in(ids).and("status").exists(false)),
+                    new Update().set("status", EventStatus.SUCCESS.name()), EventDocument.class).getModifiedCount();
+        }
         if (migrated > 0) {
             log.info("Back-filled status=SUCCESS on {} events stored before the status field existed", migrated);
         }

@@ -1,9 +1,11 @@
 package com.kafkalab.eventconsole.consumer.consume;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.common.header.Header;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -11,7 +13,9 @@ import org.springframework.stereotype.Component;
 import com.kafkalab.eventconsole.consumer.config.AppProperties;
 import com.kafkalab.eventconsole.consumer.model.EventDocument;
 import com.kafkalab.eventconsole.consumer.model.EventStatus;
+import com.kafkalab.eventconsole.consumer.process.ConsumedEvent;
 import com.kafkalab.eventconsole.consumer.process.EventProcessor;
+import com.kafkalab.eventconsole.consumer.process.InfrastructureUnavailableException;
 import com.kafkalab.eventconsole.consumer.repo.EventQueryRepository;
 import io.micrometer.core.instrument.MeterRegistry;
 
@@ -88,8 +92,14 @@ public class EventConsumer {
     private EventDocument toDocument(ConsumerRecord<String, String> record, Instant now) {
         EventStatus status = EventStatus.SUCCESS;
         String error = null;
+        String schemaId = schemaIdOf(record);
         try {
-            processor.process(record.key(), record.value());
+            processor.process(new ConsumedEvent(record.key(), record.value(), schemaId));
+        } catch (InfrastructureUnavailableException outage) {
+            // The Schema Registry (or a broken contract) is not this event's fault: do not record a
+            // failure. Propagate so the whole batch waits and is retried, exactly like a MongoDB outage.
+            metrics.counter("eventconsole.contract.unavailable").increment();
+            throw outage;
         } catch (RuntimeException e) {
             status = EventStatus.FAILED;
             error = describe(e);
@@ -101,6 +111,7 @@ public class EventConsumer {
                 record.offset(),
                 record.key(),
                 record.value(),
+                schemaId,
                 Instant.ofEpochMilli(record.timestamp()),
                 now,
                 status,
@@ -111,6 +122,14 @@ public class EventConsumer {
                 status == EventStatus.SUCCESS ? now : null,
                 null,
                 null);
+    }
+
+    /** Kafka header naming the Schema Registry id of the contract the producer says the value follows. */
+    public static final String SCHEMA_ID_HEADER = "x-schema-id";
+
+    private static String schemaIdOf(ConsumerRecord<String, String> record) {
+        Header header = record.headers().lastHeader(SCHEMA_ID_HEADER);
+        return header == null || header.value() == null ? null : new String(header.value(), StandardCharsets.UTF_8);
     }
 
     /** One line, bounded: it is stored with the event, returned by the API and rendered in the UI. */

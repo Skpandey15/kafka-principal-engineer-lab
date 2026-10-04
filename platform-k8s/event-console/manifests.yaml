@@ -10,7 +10,10 @@
 #
 # Prerequisite: platform-k8s/kafka/setup.sh. Use setup.sh, not `kubectl apply` directly -- it
 # builds/imports the images and creates the Secrets (event-console-mongo, producer-mongo,
-# consumer-mongo) first.
+# consumer-mongo, event-console-auth) first.
+#
+# MongoDB itself is in mongo-single.yaml (the default) or mongo-ha.yaml (a 3-member replica set,
+# MONGO_HA=1 ./setup.sh); setup.sh applies exactly one of them next to this file.
 #
 # The Secrets are deliberately NOT in this file: a password committed to git is not a secret.
 # setup.sh generates random ones on first run and never prints them.
@@ -21,138 +24,79 @@ metadata:
   labels:
     pod-security.kubernetes.io/enforce: restricted
 ---
-# ---------------------------------------------------------------- MongoDB
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: mongo-data
-  namespace: event-console
-spec:
-  accessModes: ["ReadWriteOnce"]
-  resources: { requests: { storage: 1Gi } }
----
+# ---------------------------------------------------------------- Schema Registry (the event contract)
+# Holds the versions of the event schema and enforces their compatibility rule when a new version
+# is registered (platform-k8s/event-console/contracts/register.sh, never by the services). The
+# services only READ it. Its own state lives in the `_schemas` topic on the Kafka broker, so this
+# pod keeps no data and can be replaced freely.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: mongo
+  name: schema-registry
   namespace: event-console
-  labels: { app: mongo }
+  labels: { app: schema-registry }
 spec:
   replicas: 1
-  # One volume, one writer: never run old and new pods side by side.
+  # Registry instances identify each other by host:port; during a default RollingUpdate an old and
+  # a new pod briefly coexist and the leader election can reject the second one. Recreate avoids it.
   strategy: { type: Recreate }
-  selector: { matchLabels: { app: mongo } }
+  selector: { matchLabels: { app: schema-registry } }
   template:
-    metadata: { labels: { app: mongo } }
+    metadata: { labels: { app: schema-registry } }
     spec:
+      # Kubernetes injects SCHEMA_REGISTRY_PORT for a Service named "schema-registry", and this
+      # image's entrypoint hard-exits when that variable exists (documented in
+      # platform-k8s/schema-registry/manifests.yaml). Service links off.
       enableServiceLinks: false
       securityContext:
         runAsNonRoot: true
-        runAsUser: 999
-        runAsGroup: 999
-        fsGroup: 999
+        # The image's user is named (appuser), which Kubernetes cannot prove is not root; give it its numeric id.
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
         seccompProfile: { type: RuntimeDefault }
       containers:
-        - name: mongo
-          image: mongo:7.0
-          # Authentication is on: the image enables --auth when a root user is created. The root
-          # account exists only for administration; neither application uses it.
-          args: ["--wiredTigerCacheSizeGB", "0.25"]
+        - name: schema-registry
+          image: confluentinc/cp-schema-registry:7.9.2
+          ports: [{ name: http, containerPort: 8081 }]
           env:
-            - { name: MONGO_INITDB_ROOT_USERNAME, value: root }
-            - name: MONGO_INITDB_ROOT_PASSWORD
-              valueFrom: { secretKeyRef: { name: event-console-mongo, key: MONGO_PASSWORD } }
-          ports: [{ containerPort: 27017 }]
+            - name: SCHEMA_REGISTRY_HOST_NAME
+              valueFrom: { fieldRef: { fieldPath: status.podIP } }
+            - { name: SCHEMA_REGISTRY_LISTENERS, value: "http://0.0.0.0:8081" }
+            # The single-node Kafka's in-cluster listener; replication 1 is all it can satisfy.
+            - { name: SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS, value: "PLAINTEXT://kafka.kafka.svc.cluster.local:19092" }
+            - { name: SCHEMA_REGISTRY_KAFKASTORE_TOPIC_REPLICATION_FACTOR, value: "1" }
+            # The JVM would otherwise size itself from the node, not from this pod's limit.
+            - { name: SCHEMA_REGISTRY_HEAP_OPTS, value: "-Xms128m -Xmx256m" }
           resources:
-            requests: { cpu: 100m, memory: 256Mi }
+            requests: { cpu: 100m, memory: 320Mi }
             limits: { memory: 512Mi }
+          # The image writes its generated config under /etc, so the root filesystem stays writable.
           securityContext:
             allowPrivilegeEscalation: false
             capabilities: { drop: ["ALL"] }
-          volumeMounts:
-            - { name: data, mountPath: /data/db }
+          startupProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 5
+            failureThreshold: 36
           readinessProbe:
-            exec: { command: ["mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"] }
-            initialDelaySeconds: 10
+            httpGet: { path: /subjects, port: http }
             periodSeconds: 10
             timeoutSeconds: 5
           livenessProbe:
-            exec: { command: ["mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"] }
-            initialDelaySeconds: 30
+            httpGet: { path: /, port: http }
             periodSeconds: 20
             timeoutSeconds: 5
-            failureThreshold: 6
-      volumes:
-        - name: data
-          persistentVolumeClaim: { claimName: mongo-data }
+            failureThreshold: 3
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: mongo
+  name: schema-registry
   namespace: event-console
 spec:
-  selector: { app: mongo }
-  ports: [{ port: 27017, targetPort: 27017 }]
----
-# Creates (or updates) one least-privilege user per service: readWrite on ONLY that service's
-# database. Idempotent, so setup.sh can re-run it every time (it deletes and recreates the Job,
-# since a Job's spec is immutable). Works on a fresh volume AND an existing one, which MongoDB's
-# own init-script mechanism does not (that only runs on an empty data directory).
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: mongo-users
-  namespace: event-console
-spec:
-  backoffLimit: 8
-  ttlSecondsAfterFinished: 600
-  template:
-    metadata: { labels: { app: mongo-users } }
-    spec:
-      restartPolicy: OnFailure
-      enableServiceLinks: false
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 999
-        runAsGroup: 999
-        seccompProfile: { type: RuntimeDefault }
-      containers:
-        - name: create-users
-          image: mongo:7.0
-          env:
-            - { name: HOME, value: /tmp }
-            - name: ROOT_PASSWORD
-              valueFrom: { secretKeyRef: { name: event-console-mongo, key: MONGO_PASSWORD } }
-            - name: PRODUCER_PASSWORD
-              valueFrom: { secretKeyRef: { name: producer-mongo, key: PASSWORD } }
-            - name: CONSUMER_PASSWORD
-              valueFrom: { secretKeyRef: { name: consumer-mongo, key: PASSWORD } }
-          command:
-            - sh
-            - -c
-            - |
-              exec mongosh --host mongo --quiet -u root -p "$ROOT_PASSWORD" --authenticationDatabase admin --eval '
-                const ensureUser = (dbName, user, pwd) => {
-                  const d = db.getSiblingDB(dbName);
-                  const roles = [{ role: "readWrite", db: dbName }];
-                  if (d.getUser(user)) { d.updateUser(user, { pwd: pwd, roles: roles }); print("updated " + user + " on " + dbName); }
-                  else { d.createUser({ user: user, pwd: pwd, roles: roles }); print("created " + user + " on " + dbName); }
-                };
-                ensureUser("eventconsole_producer", "producer", process.env.PRODUCER_PASSWORD);
-                ensureUser("eventconsole_consumer", "consumer", process.env.CONSUMER_PASSWORD);
-              '
-          resources:
-            requests: { cpu: 10m, memory: 64Mi }
-            limits: { memory: 192Mi }
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities: { drop: ["ALL"] }
-          volumeMounts:
-            - { name: tmp, mountPath: /tmp }
-      volumes:
-        - { name: tmp, emptyDir: { sizeLimit: 32Mi } }
+  selector: { app: schema-registry }
+  ports: [{ name: http, port: 8081, targetPort: http }]
 ---
 # ---------------------------------------------------------------- PRODUCER service
 apiVersion: apps/v1
@@ -162,13 +106,18 @@ metadata:
   namespace: event-console
   labels: { app: event-console-producer }
 spec:
-  # Stateless, so it scales horizontally. One replica here only because this is a laptop cluster.
-  replicas: 1
+  # Stateless, so it scales horizontally. Two replicas means a pod can die, or be rolled, without
+  # publishing stopping. (SINGLE_REPLICA=1 ./setup.sh scales to one on a very small cluster.)
+  replicas: 2
+  # Never take a pod away before its replacement is Ready.
+  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } }
   selector: { matchLabels: { app: event-console-producer } }
   template:
     metadata: { labels: { app: event-console-producer } }
     spec:
       enableServiceLinks: false
+      topologySpreadConstraints:
+        - { maxSkew: 1, topologyKey: kubernetes.io/hostname, whenUnsatisfiable: ScheduleAnyway, labelSelector: { matchLabels: { app: event-console-producer } } }
       terminationGracePeriodSeconds: 40
       securityContext:
         runAsNonRoot: true
@@ -197,7 +146,7 @@ spec:
             - { name: tmp, mountPath: /tmp }
       containers:
         - name: producer
-          image: kafkalab/event-console-producer:0.3.0
+          image: kafkalab/event-console-producer:0.4.2
           imagePullPolicy: IfNotPresent
           ports: [{ name: http, containerPort: 8080 }]
           env:
@@ -251,12 +200,16 @@ metadata:
   labels: { app: event-console-consumer }
 spec:
   # Consumer-group members share the topic's partitions, so replicas beyond the partition count
-  # (3) would sit idle. Scale up to 3 for throughput; never past it.
-  replicas: 1
+  # (3) would sit idle. Two gives failover: when one dies the other takes over its partitions
+  # (a rebalance, so a short pause), and both run a retry worker. Up to 3 for throughput; never past it.
+  replicas: 2
+  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } }
   selector: { matchLabels: { app: event-console-consumer } }
   template:
     metadata: { labels: { app: event-console-consumer } }
     spec:
+      topologySpreadConstraints:
+        - { maxSkew: 1, topologyKey: kubernetes.io/hostname, whenUnsatisfiable: ScheduleAnyway, labelSelector: { matchLabels: { app: event-console-consumer } } }
       enableServiceLinks: false
       # Longer than the app's 25s graceful-shutdown phase, so Kubernetes does not SIGKILL a pod
       # that is still committing its last consumer offsets.
@@ -285,7 +238,7 @@ spec:
             - { name: tmp, mountPath: /tmp }
       containers:
         - name: consumer
-          image: kafkalab/event-console-consumer:0.3.0
+          image: kafkalab/event-console-consumer:0.4.2
           imagePullPolicy: IfNotPresent
           ports: [{ name: http, containerPort: 8080 }]
           env:
@@ -336,12 +289,15 @@ metadata:
   namespace: event-console
   labels: { app: event-console-frontend }
 spec:
-  replicas: 1
+  replicas: 2
+  strategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } }
   selector: { matchLabels: { app: event-console-frontend } }
   template:
     metadata: { labels: { app: event-console-frontend } }
     spec:
       enableServiceLinks: false
+      topologySpreadConstraints:
+        - { maxSkew: 1, topologyKey: kubernetes.io/hostname, whenUnsatisfiable: ScheduleAnyway, labelSelector: { matchLabels: { app: event-console-frontend } } }
       securityContext:
         runAsNonRoot: true
         runAsUser: 101
@@ -351,7 +307,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: frontend
-          image: kafkalab/event-console-frontend:0.3.0
+          image: kafkalab/event-console-frontend:0.4.2
           imagePullPolicy: IfNotPresent
           ports: [{ name: http, containerPort: 8080 }]
           env:
@@ -370,6 +326,8 @@ spec:
             - { name: tmp, mountPath: /tmp }
             # nginx renders its config from the template here at start-up.
             - { name: nginx-conf, mountPath: /etc/nginx/conf.d }
+            # htpasswd files for the viewer and operator accounts (generated by setup.sh, never in git).
+            - { name: auth, mountPath: /etc/nginx/auth, readOnly: true }
           readinessProbe:
             httpGet: { path: /healthz, port: http }
             periodSeconds: 10
@@ -379,6 +337,10 @@ spec:
       volumes:
         - { name: tmp, emptyDir: { sizeLimit: 32Mi } }
         - { name: nginx-conf, emptyDir: { sizeLimit: 1Mi } }
+        - name: auth
+          secret:
+            secretName: event-console-auth
+            defaultMode: 0440
 ---
 apiVersion: v1
 kind: Service
@@ -408,6 +370,9 @@ spec:
         - podSelector: { matchLabels: { app: event-console-producer } }
         - podSelector: { matchLabels: { app: event-console-consumer } }
         - podSelector: { matchLabels: { app: mongo-users } }
+        # Replica-set mode (mongo-ha.yaml): the members talk to each other, and one Job forms the set.
+        - podSelector: { matchLabels: { app: mongo } }
+        - podSelector: { matchLabels: { app: mongo-rs-init } }
       ports: [{ port: 27017 }]
 ---
 apiVersion: networking.k8s.io/v1
@@ -433,3 +398,51 @@ spec:
   ingress:
     - from: [{ podSelector: { matchLabels: { app: event-console-frontend } } }]
       ports: [{ port: 8080 }]
+---
+# The registry is reachable only by the two services, which only read it. Registering a version
+# is done with `kubectl exec` into the registry pod itself (contracts/register.sh), so no other
+# pod needs a way in.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: schema-registry-from-services-only
+  namespace: event-console
+spec:
+  podSelector: { matchLabels: { app: schema-registry } }
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: event-console-producer } }
+        - podSelector: { matchLabels: { app: event-console-consumer } }
+      ports: [{ port: 8081 }]
+---
+# ---------------------------------------------------------------- Disruption budgets
+# A voluntary disruption (a node drain, a cluster upgrade) may take at most one pod of a service at a
+# time, so a service with two replicas never goes to zero because somebody was patching nodes.
+# With SINGLE_REPLICA=1 these budgets would block every drain; remove them on such a cluster.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: event-console-producer
+  namespace: event-console
+spec:
+  minAvailable: 1
+  selector: { matchLabels: { app: event-console-producer } }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: event-console-consumer
+  namespace: event-console
+spec:
+  minAvailable: 1
+  selector: { matchLabels: { app: event-console-consumer } }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: event-console-frontend
+  namespace: event-console
+spec:
+  minAvailable: 1
+  selector: { matchLabels: { app: event-console-frontend } }

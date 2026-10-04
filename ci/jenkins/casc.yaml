@@ -1,0 +1,38 @@
+# Jenkins configuration as code for the local CI controller. Nothing here is clicked in a UI.
+#
+# Security: this controller listens on 127.0.0.1 only and has NO login, because it is a local
+# verification rig, not a shared server. Do not copy `unsecured` to a Jenkins anyone else can reach.
+jenkins:
+  systemMessage: "kafka-principal-engineer-lab - local CI controller"
+  # One at a time: each Gradle + Testcontainers build starts a Kafka and a MongoDB container, and two of them
+  # side by side need more memory than a laptop has. (The pipeline queues the rest.)
+  numExecutors: 1
+  # The Jenkinsfile asks for agents labelled `docker`; this controller is its own agent.
+  labelString: "docker"
+  authorizationStrategy: unsecured
+
+unclassified:
+  location:
+    url: "http://localhost:8082/"
+
+jobs:
+  - script: >
+      pipelineJob('kafka-lab') {
+        description('The repository Jenkinsfile, checked out from the mounted working copy.')
+        parameters {
+          stringParam('LABS', '', 'Comma-separated lab paths (relative to labs/) to run; empty runs all of them.')
+          booleanParam('RUN_K8S_DEPLOY_VALIDATION', false, 'Also deploy every platform-k8s/ environment to a k3d cluster.')
+        }
+        definition {
+          cpsScm {
+            scm {
+              git {
+                remote { url('file:///repo') }
+                branches('*/${LAB_BRANCH}')
+              }
+            }
+            scriptPath('Jenkinsfile')
+            lightweight(false)
+          }
+        }
+      }

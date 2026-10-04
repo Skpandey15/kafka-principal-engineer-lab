@@ -43,15 +43,29 @@ server:
 app:
   topic: ${APP_TOPIC:event-console}
   max-bulk-events: 50000
+
+  # The event contract. Every event is checked against the LATEST version of this subject before
+  # anything is sent, and carries the id of the version it was checked against in an x-schema-id
+  # header. Nothing is published if any event in a request violates it. The registry URL
+  # (app.schema.registry-url) comes from the profile.
+  schema:
+    subject: ${APP_SCHEMA_SUBJECT:event-console-value}
+    connect-timeout-ms: 2000
+    read-timeout-ms: 5000
+    cache-ttl-ms: 60000
   # Publish-job audit records expire; the events themselves live in Kafka.
   jobs-ttl: ${APP_JOBS_TTL:30d}
 
 # --- Observability -----------------------------------------------------------
 management:
+  # Every series carries which service it came from, so a Prometheus scraping both can tell them apart.
+  metrics:
+    tags:
+      application: ${spring.application.name}
   endpoints:
     web:
       exposure:
-        include: health,info,metrics
+        include: health,info,metrics,prometheus
   endpoint:
     health:
       probes:

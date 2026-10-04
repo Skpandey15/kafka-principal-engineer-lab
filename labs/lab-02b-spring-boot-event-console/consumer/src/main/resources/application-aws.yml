@@ -19,6 +19,9 @@
 #                          ?tls=true&replicaSet=rs0&readPreference=secondaryPreferred&retryWrites=false
 #                          (DocumentDB does not support retryWrites, and needs the Amazon CA
 #                          bundle in the JVM trust store -- bake it into the image.)
+#   SCHEMA_REGISTRY_URL    A Confluent-compatible Schema Registry (Confluent Cloud, self-hosted, Apicurio
+#                          in compatibility mode). AWS Glue Schema Registry has a different API and is
+#                          NOT supported by this client.
 #
 # MSK IAM authentication (AWS_MSK_IAM) is NOT configured: it needs the aws-msk-iam-auth library,
 # which this project does not depend on.
@@ -33,6 +36,8 @@ spring:
     uri: ${MONGODB_URI}
 
 app:
+  schema:
+    registry-url: ${SCHEMA_REGISTRY_URL}
   # MSK spreads brokers over 3 AZs: replicate to 3 and require 2 in sync, so one broker/AZ can
   # fail without losing acknowledged writes (acks=all is already set in application.yml).
   # Partition count is a capacity decision; size it for your throughput and consumer count.

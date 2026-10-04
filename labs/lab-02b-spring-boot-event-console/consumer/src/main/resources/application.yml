@@ -59,6 +59,14 @@ app:
   # FAILED and DEAD events never expire on their own.
   events-ttl: ${APP_EVENTS_TTL:7d}
 
+  # The event contract. Events must carry an x-schema-id header naming a JSON Schema in this
+  # registry; an event that does not follow its schema is FAILED and goes through the retry path.
+  # The URL (app.schema.registry-url) comes from the profile. If the registry is unreachable the consumer waits
+  # (like a MongoDB outage) instead of failing events; schemas already seen keep working.
+  schema:
+    connect-timeout-ms: 2000
+    read-timeout-ms: 5000
+
   # Events that fail processing are stored as FAILED and retried by the worker in this service.
   retry:
     enabled: ${APP_RETRY_ENABLED:true}
@@ -76,10 +84,14 @@ app:
 
 # --- Observability -----------------------------------------------------------
 management:
+  # Every series carries which service it came from, so a Prometheus scraping both can tell them apart.
+  metrics:
+    tags:
+      application: ${spring.application.name}
   endpoints:
     web:
       exposure:
-        include: health,info,metrics
+        include: health,info,metrics,prometheus
   endpoint:
     health:
       probes:

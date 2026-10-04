@@ -21,6 +21,9 @@ public record PublishJob(
         int acked,
         int failed,
         long durationMs,
+        /** The contract the events were checked against (null only for records written before contracts existed). */
+        Integer schemaId,
+        Integer schemaVersion,
         /** Acknowledged records per partition number (as a string: Mongo map keys must be strings). */
         Map<String, Long> partitionCounts,
         String firstError) {

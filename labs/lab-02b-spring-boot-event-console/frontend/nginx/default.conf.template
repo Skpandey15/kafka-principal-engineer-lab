@@ -1,3 +1,34 @@
+# --- rate limiting (http context: this file is included inside nginx's http block) -------------
+#
+# Reads: a generous per-client ceiling that mostly exists to slow down password guessing, since
+# every request -- including a failed login -- counts against it.
+limit_req_zone $binary_remote_addr zone=perclient:2m rate=30r/s;
+# Writes (publish, requeue, clear): only POST/PUT/DELETE get a key. nginx does not count a request
+# whose key is empty, so GETs are untouched by this zone. Keyed by client address: behind a NodePort
+# or load balancer that SNATs, every user shares one address and the limit is effectively global --
+# which still protects Kafka and MongoDB, just not one user from another.
+map $request_method $write_key {
+    default "";
+    POST    $binary_remote_addr;
+    PUT     $binary_remote_addr;
+    DELETE  $binary_remote_addr;
+}
+limit_req_zone $write_key zone=writes:2m rate=5r/s;
+
+# Who may do what is decided by the request method. Reading (GET/HEAD) accepts the viewer or the
+# operator; anything that changes state accepts the operator only. (limit_except would be the obvious
+# tool, but a limit_except block does not run the parent location's `set`, which breaks the proxying.)
+map $request_method $htpasswd_file {
+    default /etc/nginx/auth/operators.htpasswd;
+    GET     /etc/nginx/auth/viewers.htpasswd;
+    HEAD    /etc/nginx/auth/viewers.htpasswd;
+}
+map $request_method $auth_realm {
+    default "Event Console operators";
+    GET     "Event Console";
+    HEAD    "Event Console";
+}
+
 server {
     listen 8080;
     server_name _;
@@ -12,6 +43,18 @@ server {
     gzip on;
     gzip_types text/css application/javascript application/json image/svg+xml;
     gzip_min_length 1024;
+
+    # --- who may do what -----------------------------------------------------------------------
+    # Everyone must log in. The `viewers` file holds the viewer AND the operator account, so both can
+    # read; the `operators` file holds only the operator, and anything but GET/HEAD needs it (see the maps above).
+    # These files come from the event-console-auth Secret. HTTP Basic is only as private as the
+    # transport: this lab serves plain HTTP, so terminate TLS in front of it before real use.
+    auth_basic $auth_realm;
+    auth_basic_user_file $htpasswd_file;
+
+    limit_req zone=perclient burst=60 nodelay;
+    limit_req zone=writes burst=10 nodelay;
+    limit_req_status 429;
 
     # Resolve the backend at request time (not once at startup), so nginx neither
     # refuses to start while the backend is down nor keeps a stale pod IP after it
@@ -30,6 +73,8 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        # The services trust the edge to have authenticated; do not let a client forge who it was.
+        proxy_set_header Authorization "";
         proxy_connect_timeout 5s;
         proxy_read_timeout 30s;
     }
@@ -43,6 +88,7 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Authorization "";
         proxy_connect_timeout 5s;
         # A 50,000-event bulk publish waits for every broker ack (up to 60s server-side).
         proxy_read_timeout 90s;
@@ -55,7 +101,10 @@ server {
         try_files $uri =404;
     }
 
+    # Kubernetes probes cannot log in, and this reveals nothing. (`return` is evaluated before the
+    # rate limit and the login check, so neither can ever reject a probe.)
     location = /healthz {
+        auth_basic off;
         access_log off;
         default_type text/plain;
         return 200 "ok\n";

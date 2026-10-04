@@ -113,3 +113,58 @@ by a GitHub webhook or polling, if you don't want per-branch/per-PR runs.
   `runSecurityDemo`, etc.). Those are interactive, manual-exploration
   tools by design, not automated checks -- the *tests* are the automated
   evidence; the demo apps are for a person to watch happen.
+
+## Running the Jenkinsfile on a real Jenkins, on your own machine
+
+Everything above describes what the Jenkinsfile *should* do. [`ci/jenkins/`](../../ci/jenkins) lets you
+find out: it builds and starts a real Jenkins controller (LTS, in a container), configured entirely as
+code, whose single job runs **this repository's `Jenkinsfile`** from your working copy's committed
+branch.
+
+```bash
+ci/jenkins/run.sh                                   # build + start: http://localhost:8082
+ci/jenkins/trigger.sh "lab-02b-spring-boot-event-console/producer,lab-02b-spring-boot-event-console/consumer,lab-02b-spring-boot-event-console/frontend,event-console-alert-rules"
+ci/jenkins/stop.sh [--wipe]                         # --wipe also deletes its home (jobs, Gradle cache)
+```
+
+`trigger.sh` takes the new **`LABS`** pipeline parameter: a comma-separated list of lab paths (the names at
+the top of the Jenkinsfile, plus `lab-02b-spring-boot-event-console/frontend` and `event-console-alert-rules`).
+Empty means everything, which needs a far bigger machine than a laptop, so the script refuses to do that
+unless you pass `--all`. The controller has **one executor**: each Gradle + Testcontainers build starts a Kafka
+and a MongoDB container, and two side by side did not fit in 8 GB.
+
+### What the first real run of the pipeline found
+
+Nothing in this file had ever been executed by Jenkins before. Running it found problems that reading it
+could not:
+
+| Found by running it | Fix |
+|---|---|
+| The plugin is `timestamper`, not `timestamps` (the step is called `timestamps`) | `ci/jenkins/plugins.txt` |
+| JCasC rejected a `crumbIssuer` attribute this Jenkins version does not have | removed; the default CSRF protection stays on |
+| The Git plugin refuses a checkout from a local directory | `-Dhudson.plugins.git.GitSCM.ALLOW_LOCAL_CHECKOUT=true`, because mounting the repo at `/repo` is the point |
+| `docker run -v "$PWD/…"` inside a Jenkins *container* names a path on the **host**, which does not exist there | Jenkins' home is mounted at the **same path** on both sides |
+| The edge test (`frontend/test-nginx.sh`) called `127.0.0.1:<published port>`, which from inside the CI container is the wrong machine | it now makes every request from a client container on the test network, and copies files in instead of bind-mounting |
+| One `promtool` expectation was wrong (an `absent()` alert keeps its `job` label) — a real test failure, the first time those tests were ever run | corrected |
+| The Gradle projects ran `./gradlew check` and the `junit` step collected their results — which is the part of the Jenkinsfile that had also contained the `dir('lab-NN')` path bug fixed earlier | confirmed working |
+
+### The result
+
+On the final commit, with `LABS` set to the lab-02b producer, consumer, frontend and the alert rules:
+
+```text
+Result:                SUCCESS in 6 min 7 s   (4 parallel branches, run one at a time on 1 executor)
+producer:              ./gradlew check -> BUILD SUCCESSFUL (unit + 14 Testcontainers integration tests)
+consumer:              ./gradlew check -> BUILD SUCCESSFUL (unit + 31 integration tests incl. the real TTL monitor)
+frontend:              npm ci && npm run build; then test-nginx.sh -> "edge: all checks passed"
+alert rules:           promtool check: 9 rules; promtool test: passed
+JUnit recorded by Jenkins:   144 tests, 0 failed, 0 skipped (45 of them integration tests against real Kafka + MongoDB)
+```
+
+### What this does **not** show
+
+- Only these four branches ran. The other 16 lab suites, the Connect-plugin fetch, the lab-15/17 compose
+  branches and the `RUN_K8S_DEPLOY_VALIDATION` stage were not run — they need more machine than this one.
+- The controller and its only agent are the same container with no authentication (it listens on
+  `127.0.0.1` only). It proves the *pipeline* works on real Jenkins; it is not a model of a production
+  Jenkins with a fleet of agents, credentials and a multibranch job.

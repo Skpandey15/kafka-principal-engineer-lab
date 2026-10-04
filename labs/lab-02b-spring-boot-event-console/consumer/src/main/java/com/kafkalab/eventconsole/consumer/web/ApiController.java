@@ -71,6 +71,19 @@ public class ApiController {
                 .body(Map.of("error", "No DEAD event with that id"));
     }
 
+    /**
+     * Requeues DEAD events in bulk -- the supported way to "replay the dead-letter queue". The DEAD
+     * documents ARE the queue (the dead-letter topic holds a notification copy of each); replaying
+     * means giving them a fresh retry budget, not re-publishing them to the source topic, which would
+     * create a second, unrelated copy of the event.
+     */
+    @PostMapping("/requeue-dead")
+    public Map<String, Object> requeueDead(@RequestParam(defaultValue = "1000") int limit) {
+        int bounded = Math.min(Math.max(limit, 1), 10_000);
+        long requeued = retries.requeueDead(bounded, clock.instant());
+        return Map.of("requeued", requeued, "limit", bounded, "remainingDead", events.countByStatus().get("DEAD"));
+    }
+
     /** Clears the MongoDB read model only. The records stay in Kafka (consuming never deletes). */
     @DeleteMapping
     public ResponseEntity<Map<String, Long>> clear() {

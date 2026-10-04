@@ -5,6 +5,7 @@ import static org.awaitility.Awaitility.await;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.doAnswer;
@@ -45,10 +46,12 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.kafka.KafkaContainer;
 import org.testcontainers.mongodb.MongoDBContainer;
+import com.kafkalab.eventconsole.consumer.process.ConsumedEvent;
 import com.kafkalab.eventconsole.consumer.process.EventProcessingException;
 import com.kafkalab.eventconsole.consumer.process.EventProcessor;
 import com.kafkalab.eventconsole.consumer.repo.EventQueryRepository;
 import com.kafkalab.eventconsole.consumer.repo.EventRetryRepository;
+import com.kafkalab.eventconsole.consumer.testsupport.FakeSchemaRegistry;
 
 /**
  * The whole failure path end to end, with the retry worker RUNNING against a real broker and a
@@ -63,6 +66,8 @@ class RetryWorkerIntegrationTest {
     private static final String TOPIC = "retry-test";
     private static final int MAX_RETRIES = 3;
 
+    static final FakeSchemaRegistry REGISTRY = new FakeSchemaRegistry().withJsonSchema(1, FakeSchemaRegistry.V1);
+
     @Container
     static final KafkaContainer KAFKA = new KafkaContainer("apache/kafka:4.3.1");
 
@@ -74,6 +79,7 @@ class RetryWorkerIntegrationTest {
         registry.add("spring.kafka.bootstrap-servers", KAFKA::getBootstrapServers);
         registry.add("spring.mongodb.uri", () -> MONGO.getReplicaSetUrl("eventconsole_consumer_retry"));
         registry.add("app.topic", () -> TOPIC);
+        registry.add("app.schema.registry-url", REGISTRY::url);
         registry.add("app.retry.enabled", () -> "true");
         registry.add("app.retry.max-retries", () -> String.valueOf(MAX_RETRIES));
         registry.add("app.retry.backoff-initial-ms", () -> "100");
@@ -114,7 +120,9 @@ class RetryWorkerIntegrationTest {
         props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
         props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
         try (KafkaProducer<String, String> producer = new KafkaProducer<>(props)) {
-            producer.send(new ProducerRecord<>(TOPIC, key, value)).get();
+            ProducerRecord<String, String> record = new ProducerRecord<>(TOPIC, key, value);
+            record.headers().add("x-schema-id", "1".getBytes());
+            producer.send(record).get();
         }
     }
 
@@ -167,15 +175,15 @@ class RetryWorkerIntegrationTest {
     @Test
     void aTransientFailureIsRetriedWithBackoffUntilItSucceeds() throws Exception {
         String token = token();
-        String value = "{\"flaky\":\"" + token + "\"}";
+        String value = "{\"id\":\"flaky-" + token + "\"}";
         AtomicInteger attempts = new AtomicInteger();
         doAnswer(invocation -> {
-            String v = invocation.getArgument(1);
+            String v = ((ConsumedEvent) invocation.getArgument(0)).value();
             if (v != null && v.contains(token) && attempts.incrementAndGet() <= 2) {
                 throw new EventProcessingException("downstream temporarily unavailable");
             }
             return invocation.callRealMethod();
-        }).when(processor).process(any(), any());
+        }).when(processor).process(any());
 
         produce("flaky-key", value);
 
@@ -217,23 +225,23 @@ class RetryWorkerIntegrationTest {
         assertThat(header(letter, "x-last-error")).contains("value is not valid JSON");
 
         // 1 attempt at consume time + exactly MAX_RETRIES retries; then it was left alone.
-        verify(processor, times(1 + MAX_RETRIES)).process(any(), eq(value));
+        verify(processor, times(1 + MAX_RETRIES)).process(argThat(e -> value.equals(e.value())));
         Thread.sleep(1_500);
-        verify(processor, times(1 + MAX_RETRIES)).process(any(), eq(value));
+        verify(processor, times(1 + MAX_RETRIES)).process(argThat(e -> value.equals(e.value())));
     }
 
     @Test
     void aDeadEventCanBeRequeuedAndSucceedsOnceTheCauseIsFixed() throws Exception {
         String token = token();
-        String value = "{\"fixable\":\"" + token + "\"}";
+        String value = "{\"id\":\"fixable-" + token + "\"}";
         AtomicBoolean fixed = new AtomicBoolean(false);
         doAnswer(invocation -> {
-            String v = invocation.getArgument(1);
+            String v = ((ConsumedEvent) invocation.getArgument(0)).value();
             if (v != null && v.contains(token) && !fixed.get()) {
                 throw new EventProcessingException("rule not deployed yet");
             }
             return invocation.callRealMethod();
-        }).when(processor).process(any(), any());
+        }).when(processor).process(any());
 
         produce("fixable-key", value);
         await().atMost(Duration.ofSeconds(30)).until(() -> is(token, "DEAD"));
@@ -292,7 +300,7 @@ class RetryWorkerIntegrationTest {
         // The event was processed (and failed) more often than its budget allows -- the outage
         // attempts could not be recorded, so they were not counted against it.
         assertThat(event(token)).containsEntry("retries", MAX_RETRIES);
-        verify(processor, atLeast(1 + MAX_RETRIES + 4)).process(any(), eq(value));
+        verify(processor, atLeast(1 + MAX_RETRIES + 4)).process(argThat(e -> value.equals(e.value())));
         assertThat(refused.get()).isGreaterThanOrEqualTo(5);
     }
 }

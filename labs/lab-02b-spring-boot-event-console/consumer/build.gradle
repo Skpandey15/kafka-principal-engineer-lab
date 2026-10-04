@@ -32,11 +32,16 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-webmvc'
     implementation 'org.springframework.boot:spring-boot-starter-validation'
     implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    // Exposes /actuator/prometheus: request, JVM, Kafka client and eventconsole.* metrics for scraping.
+    implementation 'io.micrometer:micrometer-registry-prometheus'
     // Boot 4 bundles spring-kafka + the spring.kafka.* autoconfiguration
     // (spring-boot-kafka) in one starter; lab-14 wires the two by hand to
     // show why the second artifact exists.
     implementation 'org.springframework.boot:spring-boot-starter-kafka'
     implementation 'org.springframework.boot:spring-boot-starter-data-mongodb'
+    // JSON Schema validation of events against the contract held in the Schema Registry.
+    // 3.x uses Jackson 3 (tools.jackson), the same line Spring Boot 4 ships.
+    implementation 'com.networknt:json-schema-validator:3.0.8'
 
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'

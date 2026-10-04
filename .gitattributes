@@ -8,3 +8,7 @@ gradlew         text eol=lf
 Jenkinsfile     text eol=lf
 *.yaml          text eol=lf
 *.yml           text eol=lf
+
+# Container build inputs are consumed by Linux tools; a CRLF would end up inside RUN lines and plugin names.
+Dockerfile text eol=lf
+ci/jenkins/plugins.txt text eol=lf

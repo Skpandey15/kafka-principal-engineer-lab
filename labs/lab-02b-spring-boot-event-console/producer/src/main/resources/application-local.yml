@@ -14,6 +14,8 @@ spring:
     uri: ${MONGODB_URI:mongodb://localhost:27017/eventconsole_producer}
 
 app:
+  schema:
+    registry-url: ${SCHEMA_REGISTRY_URL:http://localhost:8081}
   topic-partitions: 3
   topic-replicas: 1
   topic-min-insync-replicas: 1

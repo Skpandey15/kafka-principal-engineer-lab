@@ -54,12 +54,14 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.kafka.KafkaContainer;
 import org.testcontainers.mongodb.MongoDBContainer;
+import com.kafkalab.eventconsole.consumer.config.EventStatusMetrics;
 import com.kafkalab.eventconsole.consumer.config.EventStoreSetup;
 import com.kafkalab.eventconsole.consumer.consume.EventConsumer;
 import com.kafkalab.eventconsole.consumer.model.EventDocument;
 import com.kafkalab.eventconsole.consumer.model.EventStatus;
 import com.kafkalab.eventconsole.consumer.repo.EventQueryRepository;
 import com.kafkalab.eventconsole.consumer.repo.EventRetryRepository;
+import com.kafkalab.eventconsole.consumer.testsupport.FakeSchemaRegistry;
 
 /**
  * The consumer service against a real broker and a real MongoDB, with the retry worker switched
@@ -77,6 +79,9 @@ class ConsumerIntegrationTest {
 
     private static final String TOPIC = "consumer-test";
 
+    /** The contract registry, over real HTTP. Schema 1 is the production v1 contract. */
+    static final FakeSchemaRegistry REGISTRY = new FakeSchemaRegistry().withJsonSchema(1, FakeSchemaRegistry.V1);
+
     @Container
     static final KafkaContainer KAFKA = new KafkaContainer("apache/kafka:4.3.1");
 
@@ -88,6 +93,7 @@ class ConsumerIntegrationTest {
         registry.add("spring.kafka.bootstrap-servers", KAFKA::getBootstrapServers);
         registry.add("spring.mongodb.uri", () -> MONGO.getReplicaSetUrl("eventconsole_consumer"));
         registry.add("app.topic", () -> TOPIC);
+        registry.add("app.schema.registry-url", REGISTRY::url);
         registry.add("app.consumer-backoff-initial-ms", () -> "50");
         registry.add("app.consumer-backoff-max-ms", () -> "200");
         // Nothing may move a FAILED event on while a test is looking at it.
@@ -109,6 +115,9 @@ class ConsumerIntegrationTest {
     @Autowired
     EventStoreSetup setup;
 
+    @Autowired
+    EventStatusMetrics statusMetrics;
+
     @MockitoSpyBean
     EventQueryRepository events;
 
@@ -127,6 +136,11 @@ class ConsumerIntegrationTest {
 
     /** Writes records to the topic like any producer would; waits for the broker's acknowledgement. */
     private void produce(List<String[]> keyValues) throws Exception {
+        produce(keyValues, "1");
+    }
+
+    /** @param schemaId value of the x-schema-id header, or null to send the record without one */
+    private void produce(List<String[]> keyValues, String schemaId) throws Exception {
         Properties props = new Properties();
         props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers());
         props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
@@ -134,7 +148,11 @@ class ConsumerIntegrationTest {
         try (KafkaProducer<String, String> producer = new KafkaProducer<>(props)) {
             List<Future<?>> acks = new ArrayList<>();
             for (String[] kv : keyValues) {
-                acks.add(producer.send(new ProducerRecord<>(TOPIC, kv[0], kv[1])));
+                ProducerRecord<String, String> record = new ProducerRecord<>(TOPIC, kv[0], kv[1]);
+                if (schemaId != null) {
+                    record.headers().add("x-schema-id", schemaId.getBytes());
+                }
+                acks.add(producer.send(record));
             }
             for (var ack : acks) {
                 ack.get();
@@ -201,8 +219,14 @@ class ConsumerIntegrationTest {
     }
 
     private EventDocument failedEvent(String id, Instant nextRetryAt) {
-        return new EventDocument(id, TOPIC, 0, Math.abs(id.hashCode()), "k", "bad", Instant.now(), Instant.now(),
+        return new EventDocument(id, TOPIC, 0, Math.abs(id.hashCode()), "k", "bad", "1", Instant.now(), Instant.now(),
                 EventStatus.FAILED, 0, "boom", nextRetryAt, null, null, null, null);
+    }
+
+    /** A record as the producer service sends it: stamped with the id of the contract it was checked against. */
+    private static ConsumerRecord<String, String> withSchema(ConsumerRecord<String, String> record) {
+        record.headers().add("x-schema-id", "1".getBytes());
+        return record;
     }
 
     private EventDocument stored(String id) {
@@ -215,7 +239,7 @@ class ConsumerIntegrationTest {
     void recordsWrittenByAnyProducerAreStoredAndTheSameKeyStaysOnOnePartition() throws Exception {
         List<String[]> batch = new ArrayList<>();
         for (int i = 0; i < 100; i++) {
-            batch.add(new String[] { "cust-" + (i % 5), "{\"seq\":" + i + "}" });
+            batch.add(new String[] { "cust-" + (i % 5), "{\"id\":\"r-" + i + "\",\"seq\":" + i + "}" });
         }
         produce(batch);
 
@@ -238,8 +262,8 @@ class ConsumerIntegrationTest {
 
     @Test
     void keyAndValueSearchAndKeylessRecordsWork() throws Exception {
-        produce(List.of(new String[] { "inv-1", "{\"sku\":\"A-100\"}" }, new String[] { "inv-2", "{\"sku\":\"B-200\"}" },
-                new String[] { null, "{\"note\":\"keyless-event\"}" }));
+        produce(List.of(new String[] { "inv-1", "{\"id\":\"i1\",\"batch\":\"A-100\"}" }, new String[] { "inv-2", "{\"id\":\"i2\",\"batch\":\"B-200\"}" },
+                new String[] { null, "{\"id\":\"i3\",\"batch\":\"keyless-event\"}" }));
         await().atMost(Duration.ofSeconds(60)).until(() -> storedTotal() == 3);
 
         assertThat(get("/api/events?key=inv-2").get("total")).isEqualTo(1);
@@ -250,9 +274,9 @@ class ConsumerIntegrationTest {
 
     @Test
     void redeliveringRecordsNeverCreatesDuplicatesEvenInAMixedBatch() {
-        ConsumerRecord<String, String> a = new ConsumerRecord<>(TOPIC, 2, 4242L, "k", "{}");
-        ConsumerRecord<String, String> b = new ConsumerRecord<>(TOPIC, 2, 4243L, "k", "{}");
-        ConsumerRecord<String, String> c = new ConsumerRecord<>(TOPIC, 1, 7L, "k", "{}");
+        ConsumerRecord<String, String> a = new ConsumerRecord<>(TOPIC, 2, 4242L, "k", "{\"id\":\"x\"}");
+        ConsumerRecord<String, String> b = new ConsumerRecord<>(TOPIC, 2, 4243L, "k", "{\"id\":\"x\"}");
+        ConsumerRecord<String, String> c = new ConsumerRecord<>(TOPIC, 1, 7L, "k", "{\"id\":\"x\"}");
 
         assertThat(consumer.storeBatch(List.of(a))).isEqualTo(1);
         assertThat(consumer.storeBatch(List.of(a))).isZero();
@@ -281,8 +305,8 @@ class ConsumerIntegrationTest {
 
     @Test
     void anInvalidEventIsStoredAsFailedWithItsReasonAndNeverBlocksOrLosesItsNeighbours() throws Exception {
-        produce(List.of(new String[] { "a", "{\"ok\":\"before\"}" }, new String[] { "b", "poison-record" },
-                new String[] { "c", "{\"ok\":\"after\"}" }));
+        produce(List.of(new String[] { "a", "{\"id\":\"b\"}" }, new String[] { "b", "poison-record" },
+                new String[] { "c", "{\"id\":\"a\"}" }));
 
         await().atMost(Duration.ofSeconds(60)).until(() -> storedTotal() == 3);
         assertThat(byStatus()).containsEntry("SUCCESS", 2L).containsEntry("FAILED", 1L).containsEntry("DEAD", 0L);
@@ -295,7 +319,7 @@ class ConsumerIntegrationTest {
         // The consumer moved past it: its offset is committed, so a restart would not replay it...
         await().atMost(Duration.ofSeconds(30)).until(() -> lag() == 0);
         // ...and it keeps consuming afterwards.
-        produce(List.<String[]>of(new String[] { "d", "{\"ok\":\"later\"}" }));
+        produce(List.<String[]>of(new String[] { "d", "{\"id\":\"l\"}" }));
         await().atMost(Duration.ofSeconds(30)).until(() -> storedTotal() == 4);
         // Nothing was dead-lettered: DEAD is only reachable through the retry worker.
         assertThat(readDeadLetters(Duration.ofSeconds(3), Integer.MAX_VALUE)).isEmpty();
@@ -315,7 +339,7 @@ class ConsumerIntegrationTest {
 
         List<String[]> batch = new ArrayList<>();
         for (int i = 0; i < 30; i++) {
-            batch.add(new String[] { "k-" + i, "{\"outage\":" + i + "}" });
+            batch.add(new String[] { "k-" + i, "{\"id\":\"o-" + i + "\"}" });
         }
         produce(batch);
 
@@ -329,7 +353,7 @@ class ConsumerIntegrationTest {
     void clearingTheReadModelDoesNotRemoveRecordsFromKafka() throws Exception {
         List<String[]> batch = new ArrayList<>();
         for (int i = 0; i < 20; i++) {
-            batch.add(new String[] { "u-" + i, "{\"clear\":" + i + "}" });
+            batch.add(new String[] { "u-" + i, "{\"id\":\"c-" + i + "\"}" });
         }
         produce(batch);
         await().atMost(Duration.ofSeconds(60)).until(() -> storedTotal() == 20);
@@ -355,6 +379,79 @@ class ConsumerIntegrationTest {
             }
         }
         assertThat(seen).isGreaterThanOrEqualTo(20);
+    }
+
+    // --- the event contract --------------------------------------------------------------------
+
+    private Map<String, Object> only(String q) {
+        List<Map<String, Object>> found = items("/api/events?q=" + q);
+        assertThat(found).hasSize(1);
+        return found.getFirst();
+    }
+
+    @Test
+    void anEventWithNoSchemaHeaderOrAnUnregisteredSchemaIsFailedWithTheReason() throws Exception {
+        produce(List.<String[]>of(new String[] { "n", "{\"id\":\"no-header\"}" }), null);
+        produce(List.<String[]>of(new String[] { "u", "{\"id\":\"unknown-schema\"}" }), "99");
+        await().atMost(Duration.ofSeconds(60)).until(() -> storedTotal() == 2);
+
+        assertThat((String) only("no-header").get("lastError")).contains("no x-schema-id header");
+        assertThat((String) only("unknown-schema").get("lastError")).contains("schema id 99 is not registered");
+        assertThat(byStatus()).containsEntry("FAILED", 2L).containsEntry("SUCCESS", 0L);
+    }
+
+    @Test
+    void anEventThatBreaksTheSchemaIsFailedWithWhatIsWrongAndKeepsTheSchemaItDeclared() throws Exception {
+        produce(List.<String[]>of(new String[] { "v", "{\"id\":\"violating\",\"seq\":-1}" }));
+        await().atMost(Duration.ofSeconds(60)).until(() -> storedTotal() == 1);
+
+        Map<String, Object> event = only("violating");
+        assertThat(event).containsEntry("status", "FAILED").containsEntry("schemaId", "1");
+        assertThat((String) event.get("lastError")).startsWith("EventProcessingException: violates schema 1:").contains("seq");
+    }
+
+    @Test
+    void aSchemaRegistryOutageStallsTheConsumerWithoutFailingAnyEventAndItCatchesUpWhenTheRegistryReturns() throws Exception {
+        REGISTRY.withJsonSchema(2, FakeSchemaRegistry.V1); // a schema this consumer has never seen
+        REGISTRY.setDown(true);
+        try {
+            List<String[]> batch = new ArrayList<>();
+            for (int i = 0; i < 12; i++) {
+                batch.add(new String[] { "reg-" + i, "{\"id\":\"reg-" + i + "\"}" });
+            }
+            produce(batch, "2");
+
+            // While the registry is down nothing can be checked, and nothing may be recorded as failed.
+            Thread.sleep(4_000);
+            assertThat(storedTotal()).isZero();
+            assertThat(byStatus()).containsEntry("FAILED", 0L);
+        } finally {
+            REGISTRY.setDown(false);
+        }
+        await().atMost(Duration.ofSeconds(60)).until(() -> storedTotal() == 12);
+        assertThat(byStatus()).containsEntry("SUCCESS", 12L).containsEntry("FAILED", 0L);
+    }
+
+    @Test
+    void schemasAlreadySeenKeepWorkingWhileTheRegistryIsDown() throws Exception {
+        produce(List.<String[]>of(new String[] { "w", "{\"id\":\"warm-up\"}" }));
+        await().atMost(Duration.ofSeconds(60)).until(() -> storedTotal() == 1);
+        int requestsBefore = REGISTRY.requestCount();
+
+        REGISTRY.setDown(true);
+        try {
+            List<String[]> batch = new ArrayList<>();
+            for (int i = 0; i < 20; i++) {
+                batch.add(new String[] { "k-" + i, "{\"id\":\"cached-" + i + "\"}" });
+            }
+            produce(batch);
+            await().atMost(Duration.ofSeconds(60)).until(() -> storedTotal() == 21);
+            // Not a single extra request: an immutable id is looked up once, ever.
+            assertThat(REGISTRY.requestCount()).isEqualTo(requestsBefore);
+        } finally {
+            REGISTRY.setDown(false);
+        }
+        assertThat(byStatus()).containsEntry("SUCCESS", 21L);
     }
 
     // --- the retry queue's storage rules (what lets several workers share it safely) ----------
@@ -462,8 +559,9 @@ class ConsumerIntegrationTest {
     @Test
     void theApiFiltersByStatusAndReportsCountsPerStatus() {
         Instant now = Instant.now();
-        consumer.storeBatch(List.of(new ConsumerRecord<>(TOPIC, 0, 1L, "k", "{}"), new ConsumerRecord<>(TOPIC, 0, 2L, "k", "{}"),
-                new ConsumerRecord<>(TOPIC, 0, 3L, "k", "not json")));
+        consumer.storeBatch(List.of(withSchema(new ConsumerRecord<>(TOPIC, 0, 1L, "k", "{\"id\":\"x\"}")),
+                withSchema(new ConsumerRecord<>(TOPIC, 0, 2L, "k", "{\"id\":\"x\"}")),
+                withSchema(new ConsumerRecord<>(TOPIC, 0, 3L, "k", "not json"))));
         mongo.insert(failedEvent("api-dead", now));
         retries.claimDueForRetry(now.plusSeconds(1), Duration.ofSeconds(30));
         retries.markDead("api-dead", 0, "gave up", now);
@@ -494,6 +592,67 @@ class ConsumerIntegrationTest {
         assertThat(unknown).isEqualTo(404);
         assertThat(stored("http-dead").status()).isEqualTo(EventStatus.FAILED);
         assertThat(stored("http-failed").nextRetryAt()).isAfter(now.plusSeconds(3000));
+    }
+
+    @Test
+    void deadEventsCanBeRequeuedInBulkOldestFirstUpToALimit() {
+        Instant now = Instant.now();
+        for (int i = 0; i < 5; i++) {
+            String id = "bulk-" + i;
+            mongo.insert(failedEvent(id, now));
+            retries.claimDueForRetry(now.plusSeconds(1), Duration.ofSeconds(30));
+            // deadAt is set to "now" by markDead; space them out so "oldest first" is observable
+            retries.markDead(id, 0, "gave up", now.plusSeconds(i));
+        }
+        mongo.insert(failedEvent("still-failed", now.plusSeconds(3600)));
+
+        Map<String, Object> first = http.post().uri("/api/events/requeue-dead?limit=3").retrieve()
+                .body(new ParameterizedTypeReference<>() {
+                });
+        assertThat(first).containsEntry("requeued", 3).containsEntry("limit", 3).containsEntry("remainingDead", 2);
+        // The three longest-dead were taken; the two newest are still DEAD; the other FAILED event was never touched.
+        assertThat(List.of("bulk-0", "bulk-1", "bulk-2")).allSatisfy(id -> assertThat(stored(id).status()).isEqualTo(EventStatus.FAILED));
+        assertThat(List.of("bulk-3", "bulk-4")).allSatisfy(id -> assertThat(stored(id).status()).isEqualTo(EventStatus.DEAD));
+        assertThat(stored("still-failed").nextRetryAt()).isAfter(now.plusSeconds(3000));
+
+        Map<String, Object> second = http.post().uri("/api/events/requeue-dead").retrieve()
+                .body(new ParameterizedTypeReference<>() {
+                });
+        assertThat(second).containsEntry("requeued", 2).containsEntry("remainingDead", 0);
+        Map<String, Object> none = http.post().uri("/api/events/requeue-dead").retrieve()
+                .body(new ParameterizedTypeReference<>() {
+                });
+        assertThat(none).containsEntry("requeued", 0);
+    }
+
+    @Test
+    void thePrometheusEndpointExposesTheStatusGaugesTheAlertsAreWrittenAgainst() {
+        Instant now = Instant.now();
+        mongo.insert(failedEvent("metric-dead", now));
+        retries.claimDueForRetry(now.plusSeconds(1), Duration.ofSeconds(30));
+        retries.markDead("metric-dead", 0, "gave up", now);
+        statusMetrics.refresh();
+
+        String body = http.get().uri("/actuator/prometheus").retrieve().body(String.class);
+
+        assertThat(body).containsPattern("eventconsole_events\\{[^}]*status=\"DEAD\"[^}]*\\} 1\\.0")
+                .containsPattern("eventconsole_events\\{[^}]*status=\"FAILED\"[^}]*\\} 0\\.0")
+                .containsPattern("eventconsole_dead_letters_unconfirmed\\{[^}]*\\} 1\\.0")
+                .contains("application=\"event-console-consumer\"")
+                // The consumer's own view of its lag, which EventConsoleConsumerLagHigh is written against.
+                .contains("kafka_consumer_fetch_manager_records_lag_max");
+    }
+
+    @Test
+    void theBulkRequeueLimitIsBounded() {
+        Map<String, Object> huge = http.post().uri("/api/events/requeue-dead?limit=99999999").retrieve()
+                .body(new ParameterizedTypeReference<>() {
+                });
+        Map<String, Object> negative = http.post().uri("/api/events/requeue-dead?limit=-4").retrieve()
+                .body(new ParameterizedTypeReference<>() {
+                });
+        assertThat(huge).containsEntry("limit", 10000);
+        assertThat(negative).containsEntry("limit", 1);
     }
 
     @Test
@@ -528,6 +687,23 @@ class ConsumerIntegrationTest {
         IndexInfo ttl = indexes.stream().filter(i -> i.getName().equals(EventStoreSetup.TTL_INDEX)).findFirst().orElseThrow();
         assertThat(ttl.getExpireAfter()).contains(Duration.ofDays(7));
         assertThat(ttl.getPartialFilterExpression()).contains("status").contains("SUCCESS");
+    }
+
+    @Test
+    void theBackfillOfAHugeLegacyCollectionRunsInBoundedChunksAndMissesNothing() {
+        // 12,000 events written before status existed: more than two chunks, so the loop must keep going.
+        List<Document> legacy = new ArrayList<>();
+        for (int i = 0; i < 12_000; i++) {
+            legacy.add(new Document("_id", "bulk-legacy-" + i).append("topic", TOPIC).append("partition", i % 3)
+                    .append("offset", (long) i).append("value", "{}").append("consumedAt", new java.util.Date()));
+        }
+        mongo.getCollection("events").insertMany(legacy);
+
+        assertThat(setup.migrateLegacyEvents()).isEqualTo(12_000);
+
+        assertThat(mongo.getCollection("events").countDocuments(new Document("status", new Document("$exists", false)))).isZero();
+        assertThat(mongo.getCollection("events").countDocuments(new Document("status", "SUCCESS"))).isEqualTo(12_000);
+        assertThat(setup.migrateLegacyEvents()).as("nothing left to do the second time").isZero();
     }
 
     @Test
