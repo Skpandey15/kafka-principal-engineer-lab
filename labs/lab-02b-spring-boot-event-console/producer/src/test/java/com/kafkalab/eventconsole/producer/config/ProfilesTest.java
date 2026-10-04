@@ -125,6 +125,18 @@ class ProfilesTest {
     }
 
     @Test
+    void everyPublishIsAuditedBeforeItIsSentByDefaultAndTheStrictnessCanBeRelaxedExplicitly() {
+        runner.run(ctx -> {
+            assertThat(ctx.getBean(AppProperties.class).audit().required()).isTrue();
+            assertThat(ctx.getBean(AppProperties.class).audit().interruptedAfter()).isEqualTo(java.time.Duration.ofMinutes(10));
+        });
+        runner.withPropertyValues("APP_AUDIT_REQUIRED=false", "APP_AUDIT_INTERRUPTED_AFTER=2m").run(ctx -> {
+            assertThat(ctx.getBean(AppProperties.class).audit().required()).isFalse();
+            assertThat(ctx.getBean(AppProperties.class).audit().interruptedAfter()).isEqualTo(java.time.Duration.ofMinutes(2));
+        });
+    }
+
+    @Test
     void startupValidationPassesWhenEverythingIsProvidedAndForProfilesWithNoRequirements() {
         runner.withPropertyValues("spring.profiles.active=k3d", "MONGODB_URI=mongodb://u:p@mongo/db").run(ctx ->
                 StartupConfigValidator.validate((ConfigurableEnvironment) ctx.getEnvironment()));

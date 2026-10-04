@@ -146,3 +146,4 @@ td.value { max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-sp
 
 .violations { margin: 8px 0 0; padding: 8px 10px 8px 26px; border-radius: 7px; background: var(--bad-bg); color: var(--bad); font-size: 12.5px; }
 .violations li { margin: 2px 0; word-break: break-word; }
+.alert.warn { background: var(--warn-bg); color: var(--warn); }

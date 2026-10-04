@@ -3,6 +3,9 @@ package com.kafkalab.eventconsole.producer.publish;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -18,6 +21,7 @@ import org.apache.kafka.common.TopicPartition;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.SendResult;
 import com.kafkalab.eventconsole.producer.config.AppProperties;
@@ -48,6 +52,8 @@ class BulkPublishServiceTest {
     private final List<String> sentTopics = new ArrayList<>();
     private final List<String> sentSchemaIds = new ArrayList<>();
     private KafkaTemplate<String, String> kafka;
+    private PublishJobRepository jobsRepo;
+    private final SimpleMeterRegistry meters = new SimpleMeterRegistry();
     private BulkPublishService service;
 
     @SuppressWarnings("unchecked")
@@ -71,7 +77,8 @@ class BulkPublishServiceTest {
         });
         PublishJobRepository jobs = mock(PublishJobRepository.class);
         when(jobs.save(any(PublishJob.class))).thenAnswer(inv -> inv.getArgument(0));
-        service = new BulkPublishService(kafka, jobs, props, contract, new SimpleMeterRegistry());
+        jobsRepo = jobs;
+        service = new BulkPublishService(kafka, jobs, props, contract, meters);
     }
 
     @AfterEach
@@ -173,6 +180,86 @@ class BulkPublishServiceTest {
         assertThatThrownBy(() -> service.publish(
                 new BulkPublishRequest(Mode.GENERATE, null, null, null, null, null, null, null)))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    // --- the audit record --------------------------------------------------------------------
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void theJobIsRecordedAsStartedBeforeAnythingIsSentThenReplacedByTheOutcome() {
+        PublishJob outcome = service.publish(generate(5, KeyStrategy.UNIQUE, null, null));
+
+        var order = inOrder(jobsRepo, kafka);
+        order.verify(jobsRepo).save(argThat((PublishJob j) -> PublishJob.STARTED.equals(j.status()) && j.acked() == 0));
+        order.verify(kafka, atLeastOnce()).send(any(ProducerRecord.class));
+        order.verify(jobsRepo).save(argThat((PublishJob j) -> PublishJob.COMPLETED.equals(j.status()) && j.acked() == 5));
+        assertThat(outcome.status()).isEqualTo(PublishJob.COMPLETED);
+        assertThat(outcome.acked()).isEqualTo(5);
+    }
+
+    @Test
+    void bothWritesAreTheSameJobSoTheSecondReplacesTheFirst() {
+        var ids = new ArrayList<String>();
+        when(jobsRepo.save(any(PublishJob.class))).thenAnswer(inv -> {
+            PublishJob j = inv.getArgument(0);
+            ids.add(j.id());
+            return j;
+        });
+
+        service.publish(generate(3, KeyStrategy.UNIQUE, null, null));
+
+        assertThat(ids).hasSize(2).containsOnly(ids.getFirst());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void ifTheStartRecordCannotBeWrittenNothingIsSentSoTheCallerMayRetrySafely() {
+        when(jobsRepo.save(any(PublishJob.class))).thenThrow(new DataAccessResourceFailureException("mongo down"));
+
+        assertThatThrownBy(() -> service.publish(generate(5, KeyStrategy.UNIQUE, null, null)))
+                .isInstanceOf(AuditUnavailableException.class);
+
+        verify(kafka, never()).send(any(ProducerRecord.class));
+        assertThat(sentKeys).isEmpty();
+        assertThat(meters.counter("eventconsole.audit.unavailable").count()).isEqualTo(1);
+    }
+
+    @Test
+    void ifTheOutcomeCannotBeRecordedTheCallerStillGetsTheRealOutcomeInsteadOfAnErrorThatInvitesADuplicatePublish() {
+        // The START row is written; the final write fails (MongoDB went away while the events were in flight).
+        when(jobsRepo.save(any(PublishJob.class)))
+                .thenAnswer(inv -> inv.getArgument(0))
+                .thenThrow(new DataAccessResourceFailureException("mongo down"));
+
+        PublishJob outcome = service.publish(generate(8, KeyStrategy.UNIQUE, null, null));
+
+        assertThat(sentKeys).as("the events really were sent").hasSize(8);
+        assertThat(outcome.status()).isEqualTo(PublishJob.COMPLETED_UNRECORDED);
+        assertThat(outcome.acked()).as("and the caller is told what Kafka acknowledged").isEqualTo(8);
+        assertThat(meters.counter("eventconsole.audit.unrecorded").count()).isEqualTo(1);
+    }
+
+    @Test
+    void withAuditingNotRequiredPublishingContinuesWhenTheAuditStoreIsDown() {
+        AppProperties relaxed = new AppProperties("orders", 3, 1, 1, 1000, props.schema(),
+                new AppProperties.Audit(false, java.time.Duration.ofMinutes(10)));
+        BulkPublishService lenient = new BulkPublishService(kafka, jobsRepo, relaxed, contract, meters);
+        when(jobsRepo.save(any(PublishJob.class))).thenThrow(new DataAccessResourceFailureException("mongo down"));
+
+        PublishJob outcome = lenient.publish(generate(4, KeyStrategy.UNIQUE, null, null));
+
+        assertThat(sentKeys).hasSize(4);
+        assertThat(outcome.status()).isEqualTo(PublishJob.COMPLETED_UNRECORDED);
+        assertThat(outcome.acked()).isEqualTo(4);
+    }
+
+    @Test
+    void aRejectedRequestLeavesNoAuditRowBecauseNothingWasStarted() {
+        BulkPublishRequest bad = paste(new PastedEvent("a", "not json"));
+
+        assertThatThrownBy(() -> service.publish(bad)).isInstanceOf(ContractViolationException.class);
+
+        verify(jobsRepo, never()).save(any(PublishJob.class));
     }
 
     // --- the contract ----------------------------------------------------------------------

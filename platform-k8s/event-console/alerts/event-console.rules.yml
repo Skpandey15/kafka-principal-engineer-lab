@@ -83,3 +83,11 @@ groups:
         annotations:
           summary: The consumer cannot read MongoDB
           description: The status gauges are frozen at their last values, so the DEAD/FAILED alerts cannot be trusted until MongoDB is back.
+
+      - alert: EventConsolePublishAuditGap
+        expr: sum(increase(eventconsole_audit_unrecorded_total[10m])) > 0 or sum(increase(eventconsole_audit_interrupted_total[10m])) > 0
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: A publish may exist in Kafka without a recorded outcome
+          description: A producer lost MongoDB right after sending, or died mid-publish. The events may be in Kafka; the job row is STARTED or INTERRUPTED. Compare the topic's end offsets with the job's partition counts and read the producer's ERROR log (it carries the counts).

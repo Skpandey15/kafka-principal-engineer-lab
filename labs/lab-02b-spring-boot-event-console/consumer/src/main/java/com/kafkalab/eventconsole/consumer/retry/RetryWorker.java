@@ -107,7 +107,7 @@ public class RetryWorker {
     private void retry(EventDocument event) {
         String error = null;
         try {
-            processor.process(new ConsumedEvent(event.key(), event.value(), event.schemaId()));
+            processor.process(new ConsumedEvent(event.key(), event.value(), event.schemaId(), event.partition(), event.offset()));
         } catch (InfrastructureUnavailableException outage) {
             throw outage;
         } catch (RuntimeException e) {

@@ -1,7 +1,9 @@
 package com.kafkalab.eventconsole.consumer.config;
 
 import java.time.Duration;
+import java.util.Map;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
 import org.springframework.validation.annotation.Validated;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
@@ -33,11 +35,26 @@ public record AppProperties(
      * @param registryUrl      base URL of a Confluent-compatible Schema Registry
      * @param connectTimeoutMs how long to wait to connect before treating the registry as unavailable
      * @param readTimeoutMs    how long to wait for an answer
+     * @param legacyUntilOffsets per partition, the offset below which records predate the contract and are
+     *                         accepted without a schema header (empty = the contract covers the whole topic;
+     *                         see {@code LegacyHistory})
      */
     public record Schema(
             @NotBlank String registryUrl,
             @Min(1) long connectTimeoutMs,
-            @Min(1) long readTimeoutMs) {
+            @Min(1) long readTimeoutMs,
+            Map<Integer, Long> legacyUntilOffsets) {
+
+        // The canonical constructor is the one configuration binds through (there are two).
+        @ConstructorBinding
+        public Schema {
+            legacyUntilOffsets = legacyUntilOffsets == null ? Map.of() : Map.copyOf(legacyUntilOffsets);
+        }
+
+        /** For callers that have no history to excuse. */
+        public Schema(String registryUrl, long connectTimeoutMs, long readTimeoutMs) {
+            this(registryUrl, connectTimeoutMs, readTimeoutMs, Map.of());
+        }
     }
 
     /**

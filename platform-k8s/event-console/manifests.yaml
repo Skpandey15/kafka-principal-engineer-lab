@@ -146,7 +146,7 @@ spec:
             - { name: tmp, mountPath: /tmp }
       containers:
         - name: producer
-          image: kafkalab/event-console-producer:0.4.2
+          image: kafkalab/event-console-producer:0.5.0
           imagePullPolicy: IfNotPresent
           ports: [{ name: http, containerPort: 8080 }]
           env:
@@ -238,13 +238,16 @@ spec:
             - { name: tmp, mountPath: /tmp }
       containers:
         - name: consumer
-          image: kafkalab/event-console-consumer:0.4.2
+          image: kafkalab/event-console-consumer:0.5.0
           imagePullPolicy: IfNotPresent
           ports: [{ name: http, containerPort: 8080 }]
           env:
             - { name: SPRING_PROFILES_ACTIVE, value: "k3d" }
             - { name: APP_TOPIC, value: "event-console" }
             - { name: APP_CONSUMER_GROUP, value: "event-console-consumer" }
+            # Where the topic's legacy history ends (contracts/set-cutover.sh writes the ConfigMap). Optional: with
+            # no ConfigMap nothing is legacy and the contract covers the whole topic.
+            - { name: SPRING_CONFIG_ADDITIONAL_LOCATION, value: "optional:file:/config/cutover/cutover.yml" }
             - name: MONGODB_URI
               valueFrom: { secretKeyRef: { name: consumer-mongo, key: MONGODB_URI } }
           resources:
@@ -256,6 +259,7 @@ spec:
             capabilities: { drop: ["ALL"] }
           volumeMounts:
             - { name: tmp, mountPath: /tmp }
+            - { name: cutover, mountPath: /config/cutover, readOnly: true }
           startupProbe:
             httpGet: { path: /actuator/health/liveness, port: http }
             periodSeconds: 5
@@ -271,6 +275,8 @@ spec:
             failureThreshold: 3
       volumes:
         - { name: tmp, emptyDir: { sizeLimit: 64Mi } }
+        # Optional: absent until contracts/set-cutover.sh creates it.
+        - { name: cutover, configMap: { name: event-console-cutover, optional: true } }
 ---
 apiVersion: v1
 kind: Service
@@ -307,7 +313,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: frontend
-          image: kafkalab/event-console-frontend:0.4.2
+          image: kafkalab/event-console-frontend:0.5.0
           imagePullPolicy: IfNotPresent
           ports: [{ name: http, containerPort: 8080 }]
           env:

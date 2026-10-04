@@ -18,7 +18,7 @@ cd "$(dirname "$0")"
 source ../_lib/common.sh
 
 LAB_DIR="$(cd ../../labs/lab-02b-spring-boot-event-console && pwd)"
-VERSION="0.4.2"
+VERSION="0.5.0"
 PRODUCER_IMAGE="kafkalab/event-console-producer:${VERSION}"
 CONSUMER_IMAGE="kafkalab/event-console-consumer:${VERSION}"
 FRONTEND_IMAGE="kafkalab/event-console-frontend:${VERSION}"

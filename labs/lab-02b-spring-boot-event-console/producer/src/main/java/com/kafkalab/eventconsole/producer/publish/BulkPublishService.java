@@ -12,6 +12,9 @@ import java.util.concurrent.TimeUnit;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.header.internals.RecordHeader;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessException;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.SendResult;
 import org.springframework.stereotype.Service;
@@ -30,6 +33,8 @@ public class BulkPublishService {
 
     /** Kafka header naming the Schema Registry id of the contract the event was checked against. */
     public static final String SCHEMA_ID_HEADER = "x-schema-id";
+
+    private static final Logger log = LoggerFactory.getLogger(BulkPublishService.class);
 
     private record Outgoing(String key, String value) {
     }
@@ -69,6 +74,15 @@ public class BulkPublishService {
             throw unavailable;
         }
         byte[] schemaId = String.valueOf(schema.id()).getBytes(StandardCharsets.UTF_8);
+
+        // Write-ahead audit: the job is recorded as STARTED BEFORE a single event is sent. Then every event
+        // in Kafka has a job that accounts for it, even if this process dies mid-publish. If the record cannot
+        // be written, nothing has been sent yet, so refusing is clean and the caller can safely retry.
+        String jobId = UUID.randomUUID().toString();
+        Instant createdAt = Instant.now();
+        String strategy = req.mode() == Mode.GENERATE ? effectiveStrategy(req).name() : "PASTED";
+        boolean startRecorded = recordStart(new PublishJob(jobId, createdAt, topic, req.mode().name(), strategy,
+                batch.size(), 0, 0, 0, schema.id(), schema.version(), Map.of(), null, PublishJob.STARTED));
         long started = System.nanoTime();
 
         // send() only enqueues the record in the producer's buffer; the returned
@@ -104,21 +118,45 @@ public class BulkPublishService {
         metrics.counter("eventconsole.publish.acked").increment(acked);
         metrics.counter("eventconsole.publish.failed").increment(failed);
 
-        PublishJob job = new PublishJob(
-                UUID.randomUUID().toString(),
-                Instant.now(),
-                topic,
-                req.mode().name(),
-                req.mode() == Mode.GENERATE ? effectiveStrategy(req).name() : "PASTED",
-                batch.size(),
-                acked,
-                failed,
-                (System.nanoTime() - started) / 1_000_000,
-                schema.id(),
-                schema.version(),
-                perPartition,
-                firstError);
-        return jobs.save(job);
+        PublishJob job = new PublishJob(jobId, createdAt, topic, req.mode().name(), strategy, batch.size(), acked, failed,
+                (System.nanoTime() - started) / 1_000_000, schema.id(), schema.version(), perPartition, firstError,
+                PublishJob.COMPLETED);
+        return recordOutcome(job, startRecorded);
+    }
+
+    /** @return whether the STARTED row exists. Throws if auditing is required and it could not be written. */
+    private boolean recordStart(PublishJob started) {
+        try {
+            jobs.save(started);
+            return true;
+        } catch (DataAccessException e) {
+            if (props.audit().required()) {
+                metrics.counter("eventconsole.audit.unavailable").increment();
+                throw new AuditUnavailableException("the audit record could not be written, so nothing was published", e);
+            }
+            log.warn("Publishing WITHOUT an audit record because app.audit.required=false and the audit store is down: {}",
+                    e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * The events have been sent; whatever happens to the audit write now, the publish HAPPENED and the
+     * caller must be told so. Failing the request here would invite a retry, and a retry publishes the
+     * whole batch a second time. The caller gets the true outcome, marked COMPLETED_UNRECORDED; the
+     * database still shows STARTED (and the reaper will label it INTERRUPTED), and the loss is logged
+     * with everything needed to reconstruct the row, and counted.
+     */
+    private PublishJob recordOutcome(PublishJob job, boolean startRecorded) {
+        try {
+            return jobs.save(job);
+        } catch (DataAccessException e) {
+            metrics.counter("eventconsole.audit.unrecorded").increment();
+            log.error("Publish job {} sent {} of {} events ({} failed, first error: {}) but its outcome could not be recorded"
+                    + " ({}); the audit row {}", job.id(), job.acked(), job.requested(), job.failed(), job.firstError(),
+                    e.getMessage(), startRecorded ? "still says STARTED" : "does not exist");
+            return job.withStatus(PublishJob.COMPLETED_UNRECORDED);
+        }
     }
 
     private List<Outgoing> buildBatch(BulkPublishRequest req) {

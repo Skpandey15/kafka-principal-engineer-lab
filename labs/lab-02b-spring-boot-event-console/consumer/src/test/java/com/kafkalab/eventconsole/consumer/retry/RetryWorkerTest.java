@@ -154,7 +154,7 @@ class RetryWorkerTest {
 
         worker().runOnce();
 
-        assertThat(seen.get()).isEqualTo(new com.kafkalab.eventconsole.consumer.process.ConsumedEvent("k", "{\"a\":1}", "1"));
+        assertThat(seen.get()).isEqualTo(new com.kafkalab.eventconsole.consumer.process.ConsumedEvent("k", "{\"a\":1}", "1", 1, 42));
     }
 
     @Test

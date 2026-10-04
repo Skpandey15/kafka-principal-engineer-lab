@@ -199,6 +199,12 @@ function PublishPanel({ config, onPublished }) {
           <p className="muted small">Where the broker actually stored them:</p>
           <Bars counts={result.partitionCounts} partitions={config?.partitions ?? 0} />
           {result.firstError && <div className="alert error">{result.firstError}</div>}
+          {result.status === 'COMPLETED_UNRECORDED' && (
+            <div className="alert warn" role="status">
+              The events were published, but the audit record of this job could not be saved. Do <strong>not</strong>{' '}
+              publish them again: they are already in Kafka.
+            </div>
+          )}
         </div>
       )}
     </section>
@@ -218,7 +224,15 @@ function Jobs({ jobs }) {
               <span>{new Date(j.createdAt).toLocaleTimeString()}</span>
               <span>{j.mode === 'PASTE' ? 'pasted' : j.keyStrategy.toLowerCase()}</span>
               <strong>{nf.format(j.acked)}/{nf.format(j.requested)}</strong>
-              <span className={j.failed ? 'badge bad' : 'badge ok'}>{j.failed ? `${j.failed} failed` : 'ok'}</span>
+              {j.status === 'STARTED' || j.status === 'INTERRUPTED' ? (
+                <span className="badge warn" title={j.status === 'STARTED'
+                  ? 'Recorded before sending; no outcome yet'
+                  : 'The publishing process died before recording an outcome: some events may be in Kafka'}>
+                  {j.status === 'STARTED' ? 'in progress' : 'interrupted'}
+                </span>
+              ) : (
+                <span className={j.failed ? 'badge bad' : 'badge ok'}>{j.failed ? `${j.failed} failed` : 'ok'}</span>
+              )}
             </li>
           ))}
         </ul>

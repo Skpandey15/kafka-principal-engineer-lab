@@ -43,6 +43,46 @@ class ProfilesTest {
     }
 
     @Test
+    void theLegacyCutoverIsEmptyByDefaultSoTheContractCoversTheWholeTopic() {
+        runner.run(ctx -> assertThat(ctx.getBean(AppProperties.class).schema().legacyUntilOffsets()).isEmpty());
+    }
+
+    @Test
+    void theLegacyCutoverBindsPerPartitionFromProperties() {
+        runner.withPropertyValues("app.schema.legacy-until-offsets[0]=79830", "app.schema.legacy-until-offsets[2]=81910")
+                .run(ctx -> assertThat(ctx.getBean(AppProperties.class).schema().legacyUntilOffsets())
+                        .containsOnly(java.util.Map.entry(0, 79830L), java.util.Map.entry(2, 81910L)));
+    }
+
+    @Test
+    void theLegacyCutoverBindsFromTheYamlFileTheDeploymentMountsFromAConfigMap(@org.junit.jupiter.api.io.TempDir java.nio.file.Path dir)
+            throws Exception {
+        // This is exactly what contracts/set-cutover.sh puts in the ConfigMap and the manifest mounts.
+        java.nio.file.Files.writeString(dir.resolve("cutover.yml"), """
+                app:
+                  schema:
+                    legacy-until-offsets:
+                      0: 79830
+                      1: 80100
+                      2: 81910
+                """);
+        // An explicit FILE, not a directory: a directory is only searched for files called application.*.
+        runner.withPropertyValues("spring.config.additional-location=optional:file:"
+                + dir.resolve("cutover.yml").toAbsolutePath().toString().replace('\\', '/'))
+                .run(ctx -> assertThat(ctx.getBean(AppProperties.class).schema().legacyUntilOffsets())
+                        .containsOnly(java.util.Map.entry(0, 79830L), java.util.Map.entry(1, 80100L), java.util.Map.entry(2, 81910L)));
+    }
+
+    @Test
+    void aMissingCutoverFileIsFineBecauseTheLocationIsOptional() {
+        runner.withPropertyValues("spring.config.additional-location=optional:file:/does/not/exist/cutover.yml")
+                .run(ctx -> {
+                    assertThat(ctx).hasNotFailed();
+                    assertThat(ctx.getBean(AppProperties.class).schema().legacyUntilOffsets()).isEmpty();
+                });
+    }
+
+    @Test
     void localCanBePointedElsewhereWithoutEditingFiles() {
         runner.withPropertyValues("KAFKA_BOOTSTRAP=other:9999", "MONGODB_URI=mongodb://other:1/db").run(ctx -> {
             assertThat(ctx.getEnvironment().getProperty("spring.kafka.bootstrap-servers")).isEqualTo("other:9999");
